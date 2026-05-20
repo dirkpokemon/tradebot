@@ -1313,6 +1313,112 @@ function PendingApprovalPanel({ pendingCount }) {
   );
 }
 
+// ─── Learning Stats Panel ─────────────────────────────────────────────────────
+
+const FACTOR_LABELS = {
+  score_atr_sl:        "ATR SL",
+  score_trend_4h:      "4H Trend",
+  score_trend_1h:      "1H Trend",
+  score_volume:        "Volume",
+  score_level_clean:   "Level kwaliteit",
+  score_round_number:  "Round number",
+  score_inside_doji:   "Inside/Doji",
+};
+
+const REJECTION_LABELS = {
+  level_weak:    "Level zwak",
+  no_confirm:    "Geen bevestiging",
+  wrong_trend:   "Verkeerde trend",
+  bad_timing:    "Slecht moment",
+  other:         "Anders",
+  unknown:       "Onbekend",
+};
+
+function LearningStatsPanel() {
+  const [data, setData] = useState(null);
+
+  useEffect(() => {
+    fetch(`${API_URL}/learning_stats`).then(r => r.json()).then(setData).catch(() => {});
+  }, []);
+
+  if (!data) return null;
+  if (data.reviews !== undefined && data.reviews < 5) {
+    return (
+      <div style={{ background: C.card, borderRadius: 14, padding: 20, boxShadow: C.shadow, marginBottom: 20 }}>
+        <SectionLabel>Leermodel</SectionLabel>
+        <div style={{ color: C.muted, fontSize: 12 }}>{data.message || `Nog niet genoeg beoordelingen (${data.reviews}/30)`}</div>
+      </div>
+    );
+  }
+  if (!data.factor_comparison) return null;
+
+  const factors = Object.entries(data.factor_comparison);
+  const topFactors = new Set(data.top_differentiating_factors || []);
+
+  return (
+    <div style={{ background: C.card, borderRadius: 14, padding: 20, boxShadow: C.shadow, marginBottom: 20 }}>
+      <SectionLabel>Leermodel</SectionLabel>
+
+      {/* Summary row */}
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
+        <div style={{ background: C.greenBg, borderRadius: 10, padding: "8px 16px", minWidth: 90, textAlign: "center" }}>
+          <div style={{ fontSize: 20, fontWeight: 800, color: C.green }}>{data.approval_rate}%</div>
+          <div style={{ fontSize: 9, color: C.muted, marginTop: 2 }}>Goedkeuring</div>
+        </div>
+        <div style={{ background: C.blueBg, borderRadius: 10, padding: "8px 16px", minWidth: 90, textAlign: "center" }}>
+          <div style={{ fontSize: 20, fontWeight: 800, color: C.blue }}>{data.approved}</div>
+          <div style={{ fontSize: 9, color: C.muted, marginTop: 2 }}>Goedgekeurd</div>
+        </div>
+        <div style={{ background: C.redBg, borderRadius: 10, padding: "8px 16px", minWidth: 90, textAlign: "center" }}>
+          <div style={{ fontSize: 20, fontWeight: 800, color: C.red }}>{data.skipped}</div>
+          <div style={{ fontSize: 9, color: C.muted, marginTop: 2 }}>Overgeslagen</div>
+        </div>
+        {!data.ready_for_learning && (
+          <div style={{ background: C.yellowBg, borderRadius: 10, padding: "8px 16px", alignSelf: "center" }}>
+            <div style={{ fontSize: 10, color: C.yellow, fontWeight: 600 }}>{data.total_reviews}/30 beoordelingen voor volledige analyse</div>
+          </div>
+        )}
+      </div>
+
+      {/* Factor comparison */}
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 1, marginBottom: 8 }}>FACTOR VERGELIJKING (gem. score)</div>
+        {factors.map(([key, val]) => (
+          <div key={key} style={{ marginBottom: 6 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 3 }}>
+              <span style={{ color: topFactors.has(key) ? C.blue : C.text, fontWeight: topFactors.has(key) ? 700 : 400 }}>
+                {FACTOR_LABELS[key] || key}{topFactors.has(key) ? " ★" : ""}
+              </span>
+              <span style={{ color: C.muted, fontSize: 10 }}>
+                ✅ {val.avg_approved} · ❌ {val.avg_skipped}
+              </span>
+            </div>
+            <div style={{ height: 4, background: C.border, borderRadius: 99, overflow: "hidden", display: "flex" }}>
+              <div style={{ height: "100%", background: C.green, borderRadius: "99px 0 0 99px", flex: val.avg_approved }} />
+              <div style={{ height: "100%", background: C.red, flex: val.avg_skipped }} />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Rejection reasons */}
+      {data.rejection_reasons && Object.keys(data.rejection_reasons).length > 0 && (
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 1, marginBottom: 8 }}>AFWIJZINGSREDENEN</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {Object.entries(data.rejection_reasons).sort((a, b) => b[1] - a[1]).map(([reason, count]) => (
+              <div key={reason} style={{ background: C.redBg, borderRadius: 8, padding: "4px 10px", fontSize: 10 }}>
+                <span style={{ color: C.red, fontWeight: 700 }}>{count}×</span>
+                <span style={{ color: C.muted, marginLeft: 4 }}>{REJECTION_LABELS[reason] || reason}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 
 export default function Dashboard() {
@@ -1522,6 +1628,9 @@ export default function Dashboard() {
 
       {/* ── Trade Review ────────────────────────────────────────────────────── */}
       <TradeReviewPanel closedTrades={closedTrades} />
+
+      {/* ── Learning Stats ──────────────────────────────────────────────────── */}
+      <LearningStatsPanel />
 
       {/* ── Closed trades ──────────────────────────────────────────────────── */}
       <SectionLabel badge={closedTrades.length}>Gesloten trades</SectionLabel>
