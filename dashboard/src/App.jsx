@@ -1579,7 +1579,9 @@ export default function Dashboard() {
             <Tag color={C.yellow} bg={C.yellowBg}>DAY {fmt(status.daily_loss_pct, 1)}%</Tag>
           )}
           {status?.trade_mode && (
-            <Tag color={C.blue} bg={C.blueBg}>{status.trade_mode.toUpperCase()}</Tag>
+            <Tag color={status.trade_mode === 'both' ? C.green : C.blue} bg={status.trade_mode === 'both' ? C.greenBg : C.blueBg}>
+              {status.trade_mode === 'both' ? 'DAYTRADE + SCALP' : status.trade_mode.toUpperCase()}
+            </Tag>
           )}
           {status?.human_approval && (
             <Tag color={C.yellow} bg={C.yellowBg}>HUMAN APPROVAL</Tag>
