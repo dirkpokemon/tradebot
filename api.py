@@ -358,7 +358,7 @@ async def telegram_webhook(request: Request):
             signal   = ps['signal']
             qty      = ps['qty']
             candles  = ps['candles_15m']
-            trade = place_order(exchange, state.symbol, signal, qty, candles)
+            trade = place_order(exchange, state.symbol, signal, qty, candles, trade_mode_override=ps.get('trade_mode_override'))
             if trade:
                 state.trades.append(trade)
                 update_pending_signal_status(signal_id, 'approved')

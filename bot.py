@@ -66,9 +66,10 @@ class BotState:
     # Setup gezondheid: setups die tijdelijk uitgeschakeld zijn
     disabled_setups: list = field(default_factory=list)  # ['rotation', 'range', ...]
     # Trade mode en human approval
-    trade_mode: str = "daytrade"   # "daytrade" | "scalp"
+    trade_mode: str = "daytrade"   # "daytrade" | "scalp" | "both"
     human_approval: bool = False
     pending_count: int = 0
+    last_5m_ts: str = ""           # alleen gebruikt in 'both' mode
 
 state = BotState()
 
@@ -102,7 +103,7 @@ def send_telegram(message: str):
         logger.warning(f"Telegram melding mislukt: {e}")
 
 
-def send_approval_request(signal, exchange, qty, candles_15m_snap):
+def send_approval_request(signal, exchange, qty, candles_15m_snap, trade_mode_override=None):
     """Stuur een goedkeuringsverzoek via Telegram voor een gevonden signaal."""
     token   = os.environ.get('TELEGRAM_BOT_TOKEN', '')
     chat_id = os.environ.get('TELEGRAM_CHAT_ID', '')
@@ -135,12 +136,13 @@ def send_approval_request(signal, exchange, qty, candles_15m_snap):
 
     with _pending_lock:
         pending_signals[signal_id] = {
-            'signal':      signal,
-            'exchange':    exchange,
-            'qty':         qty,
-            'candles_15m': candles_15m_snap,
-            'expires_at':  expires,
-            'ps_record':   ps_record,
+            'signal':               signal,
+            'exchange':             exchange,
+            'qty':                  qty,
+            'candles_15m':          candles_15m_snap,
+            'expires_at':           expires,
+            'ps_record':            ps_record,
+            'trade_mode_override':  trade_mode_override,
         }
 
     try:
@@ -231,7 +233,8 @@ def calculate_position_size(balance: float, entry: float, stop: float,
         return 0
     return round(risk_amount / risk_per_unit, 6)
 
-def place_order(exchange, symbol: str, signal: Signal, qty: float, candles_15m: list = None) -> Optional[Trade]:
+def place_order(exchange, symbol: str, signal: Signal, qty: float, candles_15m: list = None, trade_mode_override: str = None) -> Optional[Trade]:
+    actual_trade_mode = trade_mode_override if trade_mode_override else state.trade_mode
     mode = "SIM" if state.sim_mode else "LIVE"
     if state.sim_mode:
         trade = Trade(
@@ -248,7 +251,7 @@ def place_order(exchange, symbol: str, signal: Signal, qty: float, candles_15m: 
             reason=signal.reason,
             timestamp=datetime.utcnow().isoformat(),
             context_score=getattr(signal, 'context_score', 0),
-            trade_mode=state.trade_mode,
+            trade_mode=actual_trade_mode,
         )
         logger.info(
             f"[SIM] [{signal.setup_type.upper()}] {signal.side.upper()} {qty:.4f} {symbol} @ {signal.entry:.0f} | "
@@ -284,7 +287,7 @@ def place_order(exchange, symbol: str, signal: Signal, qty: float, candles_15m: 
                 reason=signal.reason,
                 timestamp=datetime.utcnow().isoformat(),
                 context_score=getattr(signal, 'context_score', 0),
-                trade_mode=state.trade_mode,
+                trade_mode=actual_trade_mode,
             )
             logger.info(
                 f"[LIVE] [{signal.setup_type.upper()}] {signal.side.upper()} {qty} {symbol} @ {signal.entry:.0f} | "
@@ -627,11 +630,8 @@ def run_bot():
             candles_1h  = get_candles(exchange, state.symbol, '1h',  limit=50)
             candles_4h  = get_candles(exchange, state.symbol, '4h',  limit=30)
 
-            # Trigger op 5m close in scalp mode, anders op 15m close
-            if state.trade_mode == 'scalp':
-                last_ts = str(candles_5m[-1][0])
-            else:
-                last_ts = str(candles_15m[-1][0])
+            curr_5m_ts  = str(candles_5m[-1][0])
+            curr_15m_ts = str(candles_15m[-1][0])
 
             # Expire pending signals
             now_t = time.time()
@@ -646,14 +646,59 @@ def run_bot():
                     send_telegram(f"⏰ Setup {sid} vervallen (10 min timeout)")
             state.pending_count = len(pending_signals)
 
-            if last_ts != state.last_candle_time:
-                state.last_candle_time = last_ts
+            # Bepaal welke candles nieuw zijn
+            new_15m = curr_15m_ts != state.last_candle_time
+            new_5m  = curr_5m_ts  != state.last_5m_ts
+
+            if state.trade_mode == 'both':
+                triggered = new_15m or new_5m
+            elif state.trade_mode == 'scalp':
+                triggered = new_5m
+            else:
+                triggered = new_15m
+
+            if triggered:
+                # Timestamps bijwerken
+                if state.trade_mode == 'both':
+                    if new_5m:  state.last_5m_ts = curr_5m_ts
+                    if new_15m: state.last_candle_time = curr_15m_ts
+                elif state.trade_mode == 'scalp':
+                    state.last_5m_ts = curr_5m_ts
+                else:
+                    state.last_candle_time = curr_15m_ts
+
                 manage_open_trades(exchange, candles_15m)
 
                 open_count = sum(1 for t in state.trades if t.status != "closed")
+                signal         = None
+                effective_mode = state.trade_mode
+
                 if open_count == 0:
-                    # Scalp mode: andere candles en disabled setups
-                    if state.trade_mode == 'scalp':
+                    if state.trade_mode == 'both':
+                        # Daytrade heeft prioriteit op nieuwe 15m candle
+                        if new_15m:
+                            signal = analyze(
+                                candles_15m, candles_1h,
+                                candles_4h=candles_4h,
+                                candles_5m=candles_5m,
+                                disabled_setups=state.disabled_setups,
+                                session_filter=False,
+                            )
+                            if signal:
+                                effective_mode = 'daytrade'
+                        # Scalp als geen daytrade signal en er is een nieuwe 5m candle
+                        if not signal and new_5m:
+                            signal = analyze(
+                                candles_5m, candles_15m,
+                                candles_4h=None,
+                                candles_5m=None,
+                                disabled_setups=list(set(state.disabled_setups) | {'rotation', 'continuation'}),
+                                session_filter=False,
+                                scalp_mode=True,
+                            )
+                            if signal:
+                                effective_mode = 'scalp'
+                    elif state.trade_mode == 'scalp':
                         signal = analyze(
                             candles_5m, candles_15m,
                             candles_4h=None,
@@ -671,41 +716,40 @@ def run_bot():
                             session_filter=False,
                         )
 
-                    # Signal expiry check: als entry >0.5% van huidige prijs afwijkt, verwerp
-                    if signal:
-                        curr_price = candles_15m[-1][4]
-                        entry_drift = abs(signal.entry - curr_price) / curr_price
-                        if entry_drift > 0.005:
-                            logger.info(
-                                f"Signal vervallen: entry {signal.entry:.0f} vs prijs {curr_price:.0f} "
-                                f"({entry_drift*100:.2f}% drift)"
-                            )
-                            signal = None
-
-                    if signal:
-                        state.last_signal = signal.side
-                        state.last_setup  = signal.setup_type
-
-                        # ATR-gebaseerde positiegrootte: kleinere positie bij hoge volatiliteit
-                        atr14 = calc_atr(candles_15m, 14)
-                        atr50 = calc_atr(candles_15m, min(50, len(candles_15m)))
-                        vol_scale = max(0.5, min(2.0, atr50 / atr14)) if atr14 > 0 else 1.0
-
-                        qty = calculate_position_size(
-                            state.balance, signal.entry,
-                            signal.stop_loss, state.risk_per_trade, vol_scale
+                # Signal expiry check: als entry >0.5% van huidige prijs afwijkt, verwerp
+                if signal:
+                    curr_price = candles_15m[-1][4]
+                    entry_drift = abs(signal.entry - curr_price) / curr_price
+                    if entry_drift > 0.005:
+                        logger.info(
+                            f"Signal vervallen: entry {signal.entry:.0f} vs prijs {curr_price:.0f} "
+                            f"({entry_drift*100:.2f}% drift)"
                         )
-                        if qty > 0:
-                            if state.human_approval:
-                                send_approval_request(signal, exchange, qty, candles_15m)
-                                state.pending_count = len([p for p in pending_signals.values() if p['expires_at'] > time.time()])
-                            else:
-                                trade = place_order(exchange, state.symbol, signal, qty, candles_15m)
-                                if trade:
-                                    state.trades.append(trade)
-                    else:
-                        state.last_signal = "none"
-                        state.last_setup  = "none"
+                        signal = None
+
+                if signal:
+                    state.last_signal = signal.side
+                    state.last_setup  = signal.setup_type
+
+                    atr14 = calc_atr(candles_15m, 14)
+                    atr50 = calc_atr(candles_15m, min(50, len(candles_15m)))
+                    vol_scale = max(0.5, min(2.0, atr50 / atr14)) if atr14 > 0 else 1.0
+
+                    qty = calculate_position_size(
+                        state.balance, signal.entry,
+                        signal.stop_loss, state.risk_per_trade, vol_scale
+                    )
+                    if qty > 0:
+                        if state.human_approval:
+                            send_approval_request(signal, exchange, qty, candles_15m, trade_mode_override=effective_mode)
+                            state.pending_count = len([p for p in pending_signals.values() if p['expires_at'] > time.time()])
+                        else:
+                            trade = place_order(exchange, state.symbol, signal, qty, candles_15m, trade_mode_override=effective_mode)
+                            if trade:
+                                state.trades.append(trade)
+                else:
+                    state.last_signal = "none"
+                    state.last_setup  = "none"
 
             time.sleep(10)
 
