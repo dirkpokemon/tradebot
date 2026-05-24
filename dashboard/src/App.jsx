@@ -322,6 +322,11 @@ function ActiveTradeCard({ trade }) {
           </span>
           <span style={{ fontSize: 11, color: C.muted }}>{trade.symbol}</span>
           <Tag color={C.blue} bg={C.blueBg}>{trade.setup_type.replace("_", " ")}</Tag>
+          {trade.trade_mode && (
+            <Tag color={trade.trade_mode === "scalp" ? C.orange : C.muted} bg={trade.trade_mode === "scalp" ? "#fff3ec" : "#f5f6fa"}>
+              {trade.trade_mode.toUpperCase()}
+            </Tag>
+          )}
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <Tag color={phase.color} bg={phase.bg}>{phase.label}</Tag>
@@ -540,7 +545,7 @@ function ClosedTradesTable({ trades }) {
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
         <thead>
           <tr style={{ borderBottom: `1px solid ${C.border}`, background: "#fafbfd" }}>
-            {["Tijd", "Setup", "Side", "Entry", "Exit", "TP's", "PnL"].map(h => (
+            {["Tijd", "Setup", "Mode", "Side", "Entry", "Exit", "TP's", "PnL"].map(h => (
               <th key={h} style={{ padding: "10px 16px", textAlign: "left", color: C.muted, fontWeight: 600, fontSize: 9, letterSpacing: 1, textTransform: "uppercase" }}>{h}</th>
             ))}
           </tr>
@@ -551,6 +556,11 @@ function ClosedTradesTable({ trades }) {
               <td style={{ padding: "10px 16px", color: C.muted }}>{t.timestamp?.slice(11, 16)}</td>
               <td style={{ padding: "10px 16px" }}>
                 <Tag color={C.blue} bg={C.blueBg}>{t.setup_type?.replace("_", " ")}</Tag>
+              </td>
+              <td style={{ padding: "10px 16px" }}>
+                <Tag color={t.trade_mode === "scalp" ? C.orange : C.muted} bg={t.trade_mode === "scalp" ? "#fff3ec" : "#f5f6fa"}>
+                  {(t.trade_mode || "daytrade").toUpperCase()}
+                </Tag>
               </td>
               <td style={{ padding: "10px 16px" }}>
                 <span style={{ color: t.side === "buy" ? C.green : C.red, fontWeight: 700, textTransform: "uppercase", fontSize: 11 }}>
@@ -639,13 +649,15 @@ function SetupStatsGrid({ stats }) {
 
 // ─── Candle Chart (SVG) ───────────────────────────────────────────────────────
 
-function CandleChart({ candles, entry, sl, tp1, tp2, tp3, side }) {
+function CandleChart({ candles, entry, sl, tp1, tp2, tp3, side, entryTs }) {
   if (!candles || candles.length === 0) return <EmptyState icon="📊" text="Geen candle data opgeslagen" sub="Trades die na deze update zijn geopend bevatten een snapshot" height={140} />;
 
-  const W = 560, H = 180;
+  const W = 680, H = 280;
   const PAD = { top: 18, right: 58, bottom: 4, left: 4 };
   const plotW = W - PAD.left - PAD.right;
   const plotH = H - PAD.top - PAD.bottom;
+
+  const entryIdx = entryTs != null ? candles.findIndex(c => c[0] === entryTs) : -1;
 
   const allPrices = [entry, sl, tp1, tp2, tp3, ...candles.flatMap(c => [c[2], c[3]])].filter(Boolean);
   const minP = Math.min(...allPrices);
@@ -666,6 +678,25 @@ function CandleChart({ candles, entry, sl, tp1, tp2, tp3, side }) {
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", background: "#1a1d2e", borderRadius: 8, display: "block" }}>
+      {/* Entry candle highlight */}
+      {entryIdx >= 0 && (
+        <rect
+          x={xScale(entryIdx) - cw / 2 - 2}
+          y={PAD.top}
+          width={cw + 4}
+          height={plotH}
+          fill="#ffffff"
+          opacity={0.07}
+        />
+      )}
+      {/* Entry candle vertical marker line */}
+      {entryIdx >= 0 && (
+        <line
+          x1={xScale(entryIdx)} x2={xScale(entryIdx)}
+          y1={PAD.top} y2={PAD.top + plotH}
+          stroke="#ffffff" strokeWidth={0.6} strokeDasharray="3 3" opacity={0.4}
+        />
+      )}
       {lines.map(({ p, color, label, dash }) => {
         const y = yScale(p);
         return (
@@ -677,6 +708,11 @@ function CandleChart({ candles, entry, sl, tp1, tp2, tp3, side }) {
           </g>
         );
       })}
+      {/* Entry candle label */}
+      {entryIdx >= 0 && (
+        <text x={xScale(entryIdx)} y={PAD.top - 4} fill="#ffffff" fontSize={6.5}
+          fontFamily="monospace" textAnchor="middle" opacity={0.6}>ENTRY</text>
+      )}
       {candles.map((c, i) => {
         const [, open, high, low, close] = c;
         const bull = close >= open;
@@ -707,6 +743,7 @@ const REVIEW_LABELS = [
 
 function TradeReviewModal({ trade, onClose, onSaved }) {
   const [candles, setCandles] = useState(null);
+  const [entryTs, setEntryTs] = useState(null);
   const [loadingC, setLoadingC] = useState(true);
   const [selected, setSelected] = useState(trade.review_label || null);
   const [note, setNote] = useState(trade.review_note || "");
@@ -716,7 +753,7 @@ function TradeReviewModal({ trade, onClose, onSaved }) {
     setLoadingC(true);
     fetch(`${API_URL}/trades/${trade.id}/candles`)
       .then(r => r.ok ? r.json() : null)
-      .then(data => { setCandles(data?.candles || []); setLoadingC(false); })
+      .then(data => { setCandles(data?.candles || []); setEntryTs(data?.entry_ts ?? null); setLoadingC(false); })
       .catch(() => { setCandles([]); setLoadingC(false); });
   }, [trade.id]);
 
@@ -742,7 +779,7 @@ function TradeReviewModal({ trade, onClose, onSaved }) {
       display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
     }} onClick={onClose}>
       <div style={{
-        background: C.card, borderRadius: 16, padding: 24, maxWidth: 620, width: "100%",
+        background: C.card, borderRadius: 16, padding: 24, maxWidth: 840, width: "100%",
         boxShadow: "0 20px 60px rgba(0,0,0,0.3)", maxHeight: "90vh", overflowY: "auto",
       }} onClick={e => e.stopPropagation()}>
 
@@ -754,6 +791,11 @@ function TradeReviewModal({ trade, onClose, onSaved }) {
                 {isLong ? "▲ LONG" : "▼ SHORT"}
               </span>
               <Tag color={C.blue} bg={C.blueBg}>{trade.setup_type?.replace("_", " ")}</Tag>
+              {trade.trade_mode && (
+                <Tag color={trade.trade_mode === "scalp" ? C.orange : C.muted} bg={trade.trade_mode === "scalp" ? "#fff3ec" : "#f5f6fa"}>
+                  {trade.trade_mode.toUpperCase()}
+                </Tag>
+              )}
               <span style={{ fontSize: 11, color: pnlPos ? C.green : C.red, fontWeight: 700 }}>
                 {pnlPos ? "+" : ""}{fmt(trade.realized_pnl)} USDT
               </span>
@@ -769,7 +811,7 @@ function TradeReviewModal({ trade, onClose, onSaved }) {
         <div style={{ marginBottom: 18 }}>
           {loadingC
             ? <div style={{ height: 120, display: "flex", alignItems: "center", justifyContent: "center", color: C.muted, fontSize: 11 }}>Candles laden…</div>
-            : <CandleChart candles={candles} entry={trade.entry_price} sl={trade.stop_loss} tp1={trade.tp1} tp2={trade.tp2} tp3={trade.tp3} side={trade.side} />
+            : <CandleChart candles={candles} entry={trade.entry_price} sl={trade.stop_loss} tp1={trade.tp1} tp2={trade.tp2} tp3={trade.tp3} side={trade.side} entryTs={entryTs} />
           }
         </div>
 
@@ -1313,6 +1355,112 @@ function PendingApprovalPanel({ pendingCount }) {
   );
 }
 
+// ─── Learning Stats Panel ─────────────────────────────────────────────────────
+
+const FACTOR_LABELS = {
+  score_atr_sl:        "ATR SL",
+  score_trend_4h:      "4H Trend",
+  score_trend_1h:      "1H Trend",
+  score_volume:        "Volume",
+  score_level_clean:   "Level kwaliteit",
+  score_round_number:  "Round number",
+  score_inside_doji:   "Inside/Doji",
+};
+
+const REJECTION_LABELS = {
+  level_weak:    "Level zwak",
+  no_confirm:    "Geen bevestiging",
+  wrong_trend:   "Verkeerde trend",
+  bad_timing:    "Slecht moment",
+  other:         "Anders",
+  unknown:       "Onbekend",
+};
+
+function LearningStatsPanel() {
+  const [data, setData] = useState(null);
+
+  useEffect(() => {
+    fetch(`${API_URL}/learning_stats`).then(r => r.json()).then(setData).catch(() => {});
+  }, []);
+
+  if (!data) return null;
+  if (data.reviews !== undefined && data.reviews < 5) {
+    return (
+      <div style={{ background: C.card, borderRadius: 14, padding: 20, boxShadow: C.shadow, marginBottom: 20 }}>
+        <SectionLabel>Leermodel</SectionLabel>
+        <div style={{ color: C.muted, fontSize: 12 }}>{data.message || `Nog niet genoeg beoordelingen (${data.reviews}/30)`}</div>
+      </div>
+    );
+  }
+  if (!data.factor_comparison) return null;
+
+  const factors = Object.entries(data.factor_comparison);
+  const topFactors = new Set(data.top_differentiating_factors || []);
+
+  return (
+    <div style={{ background: C.card, borderRadius: 14, padding: 20, boxShadow: C.shadow, marginBottom: 20 }}>
+      <SectionLabel>Leermodel</SectionLabel>
+
+      {/* Summary row */}
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
+        <div style={{ background: C.greenBg, borderRadius: 10, padding: "8px 16px", minWidth: 90, textAlign: "center" }}>
+          <div style={{ fontSize: 20, fontWeight: 800, color: C.green }}>{data.approval_rate}%</div>
+          <div style={{ fontSize: 9, color: C.muted, marginTop: 2 }}>Goedkeuring</div>
+        </div>
+        <div style={{ background: C.blueBg, borderRadius: 10, padding: "8px 16px", minWidth: 90, textAlign: "center" }}>
+          <div style={{ fontSize: 20, fontWeight: 800, color: C.blue }}>{data.approved}</div>
+          <div style={{ fontSize: 9, color: C.muted, marginTop: 2 }}>Goedgekeurd</div>
+        </div>
+        <div style={{ background: C.redBg, borderRadius: 10, padding: "8px 16px", minWidth: 90, textAlign: "center" }}>
+          <div style={{ fontSize: 20, fontWeight: 800, color: C.red }}>{data.skipped}</div>
+          <div style={{ fontSize: 9, color: C.muted, marginTop: 2 }}>Overgeslagen</div>
+        </div>
+        {!data.ready_for_learning && (
+          <div style={{ background: C.yellowBg, borderRadius: 10, padding: "8px 16px", alignSelf: "center" }}>
+            <div style={{ fontSize: 10, color: C.yellow, fontWeight: 600 }}>{data.total_reviews}/30 beoordelingen voor volledige analyse</div>
+          </div>
+        )}
+      </div>
+
+      {/* Factor comparison */}
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 1, marginBottom: 8 }}>FACTOR VERGELIJKING (gem. score)</div>
+        {factors.map(([key, val]) => (
+          <div key={key} style={{ marginBottom: 6 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 3 }}>
+              <span style={{ color: topFactors.has(key) ? C.blue : C.text, fontWeight: topFactors.has(key) ? 700 : 400 }}>
+                {FACTOR_LABELS[key] || key}{topFactors.has(key) ? " ★" : ""}
+              </span>
+              <span style={{ color: C.muted, fontSize: 10 }}>
+                ✅ {val.avg_approved} · ❌ {val.avg_skipped}
+              </span>
+            </div>
+            <div style={{ height: 4, background: C.border, borderRadius: 99, overflow: "hidden", display: "flex" }}>
+              <div style={{ height: "100%", background: C.green, borderRadius: "99px 0 0 99px", flex: val.avg_approved }} />
+              <div style={{ height: "100%", background: C.red, flex: val.avg_skipped }} />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Rejection reasons */}
+      {data.rejection_reasons && Object.keys(data.rejection_reasons).length > 0 && (
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 1, marginBottom: 8 }}>AFWIJZINGSREDENEN</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {Object.entries(data.rejection_reasons).sort((a, b) => b[1] - a[1]).map(([reason, count]) => (
+              <div key={reason} style={{ background: C.redBg, borderRadius: 8, padding: "4px 10px", fontSize: 10 }}>
+                <span style={{ color: C.red, fontWeight: 700 }}>{count}×</span>
+                <span style={{ color: C.muted, marginLeft: 4 }}>{REJECTION_LABELS[reason] || reason}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 
 export default function Dashboard() {
@@ -1522,6 +1670,9 @@ export default function Dashboard() {
 
       {/* ── Trade Review ────────────────────────────────────────────────────── */}
       <TradeReviewPanel closedTrades={closedTrades} />
+
+      {/* ── Learning Stats ──────────────────────────────────────────────────── */}
+      <LearningStatsPanel />
 
       {/* ── Closed trades ──────────────────────────────────────────────────── */}
       <SectionLabel badge={closedTrades.length}>Gesloten trades</SectionLabel>
