@@ -563,7 +563,7 @@ def run_bot():
         for td in saved_trades:
             t = Trade(**{k: v for k, v in td.items() if k in trade_fields})
             state.trades.append(t)
-            if t.status != "closed":
+            if t.status == "closed":
                 state.total_pnl += t.realized_pnl
         logger.info(f"{len(saved_trades)} trades hersteld uit database")
 
