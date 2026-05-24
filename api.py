@@ -168,10 +168,10 @@ class ReviewRequest(BaseModel):
 
 @app.get("/trades/{trade_id}/candles")
 def get_candles_for_trade(trade_id: str):
-    candles = get_trade_candles(trade_id)
+    candles, entry_ts = get_trade_candles(trade_id)
     if candles is None:
         raise HTTPException(status_code=404, detail="Geen candle snapshot beschikbaar")
-    return {"candles": candles}
+    return {"candles": candles, "entry_ts": entry_ts}
 
 @app.post("/trades/{trade_id}/review")
 def post_review(trade_id: str, req: ReviewRequest):

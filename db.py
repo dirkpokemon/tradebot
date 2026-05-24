@@ -88,6 +88,7 @@ _MIGRATIONS = [
     "ALTER TABLE trades ADD COLUMN review_label    TEXT DEFAULT NULL",
     "ALTER TABLE trades ADD COLUMN review_note     TEXT DEFAULT NULL",
     "ALTER TABLE trades ADD COLUMN context_score   INTEGER DEFAULT 0",
+    "ALTER TABLE trades ADD COLUMN trade_mode      TEXT DEFAULT 'daytrade'",
 ]
 
 def _conn():
@@ -111,12 +112,12 @@ def save_trade(t: dict):
         (id, symbol, side, setup_type, entry_price, quantity, stop_loss,
          tp1, tp2, tp3, timestamp, reason, status,
          tp1_hit, tp2_hit, tp3_hit, exit_price, realized_pnl, session, valid_until,
-         review_label, review_note, context_score)
+         review_label, review_note, context_score, trade_mode)
     VALUES
         (:id, :symbol, :side, :setup_type, :entry_price, :quantity, :stop_loss,
          :tp1, :tp2, :tp3, :timestamp, :reason, :status,
          :tp1_hit, :tp2_hit, :tp3_hit, :exit_price, :realized_pnl, :session, :valid_until,
-         :review_label, :review_note, :context_score)
+         :review_label, :review_note, :context_score, :trade_mode)
     """
     with _conn() as c:
         c.execute(sql, {
@@ -129,6 +130,7 @@ def save_trade(t: dict):
             'review_label': t.get('review_label', None),
             'review_note': t.get('review_note', None),
             'context_score': t.get('context_score', 0),
+            'trade_mode': t.get('trade_mode', 'daytrade'),
         })
 
 def update_trade(t: dict):
@@ -158,7 +160,8 @@ def load_trades() -> list[dict]:
             "SELECT id, symbol, side, setup_type, entry_price, quantity, stop_loss, "
             "tp1, tp2, tp3, timestamp, reason, status, tp1_hit, tp2_hit, tp3_hit, "
             "exit_price, realized_pnl, session, valid_until, review_label, review_note, "
-            "COALESCE(context_score, 0) as context_score "
+            "COALESCE(context_score, 0) as context_score, "
+            "COALESCE(trade_mode, 'daytrade') as trade_mode "
             "FROM trades ORDER BY timestamp ASC"
         ).fetchall()
     trades = []
@@ -175,19 +178,23 @@ def clear_trades():
     with _conn() as c:
         c.execute("DELETE FROM trades")
 
-def save_candle_snapshot(trade_id: str, candles: list):
+def save_candle_snapshot(trade_id: str, candles: list, entry_ts=None):
     import json
+    data = {"candles": candles, "entry_ts": entry_ts}
     with _conn() as c:
         c.execute("UPDATE trades SET candle_snapshot = ? WHERE id = ?",
-                  (json.dumps(candles), trade_id))
+                  (json.dumps(data), trade_id))
 
 def get_trade_candles(trade_id: str):
     import json
     with _conn() as c:
         row = c.execute("SELECT candle_snapshot FROM trades WHERE id = ?", (trade_id,)).fetchone()
     if not row or not row[0]:
-        return None
-    return json.loads(row[0])
+        return None, None
+    data = json.loads(row[0])
+    if isinstance(data, list):  # backward compat met oude snapshots
+        return data, None
+    return data.get("candles"), data.get("entry_ts")
 
 def save_review(trade_id: str, label: str, note: str = ""):
     with _conn() as c:

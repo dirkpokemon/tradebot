@@ -37,6 +37,7 @@ class Trade:
     review_label: Optional[str] = None
     review_note: Optional[str] = None
     context_score: int = 0
+    trade_mode: str = "daytrade"
 
 @dataclass
 class BotState:
@@ -247,6 +248,7 @@ def place_order(exchange, symbol: str, signal: Signal, qty: float, candles_15m: 
             reason=signal.reason,
             timestamp=datetime.utcnow().isoformat(),
             context_score=getattr(signal, 'context_score', 0),
+            trade_mode=state.trade_mode,
         )
         logger.info(
             f"[SIM] [{signal.setup_type.upper()}] {signal.side.upper()} {qty:.4f} {symbol} @ {signal.entry:.0f} | "
@@ -263,7 +265,7 @@ def place_order(exchange, symbol: str, signal: Signal, qty: float, candles_15m: 
         save_trade(asdict(trade))
         if candles_15m:
             from db import save_candle_snapshot
-            save_candle_snapshot(trade.id, candles_15m[-50:])
+            save_candle_snapshot(trade.id, candles_15m[-100:], entry_ts=candles_15m[-1][0])
         return trade
     else:
         try:
@@ -282,6 +284,7 @@ def place_order(exchange, symbol: str, signal: Signal, qty: float, candles_15m: 
                 reason=signal.reason,
                 timestamp=datetime.utcnow().isoformat(),
                 context_score=getattr(signal, 'context_score', 0),
+                trade_mode=state.trade_mode,
             )
             logger.info(
                 f"[LIVE] [{signal.setup_type.upper()}] {signal.side.upper()} {qty} {symbol} @ {signal.entry:.0f} | "
@@ -298,7 +301,7 @@ def place_order(exchange, symbol: str, signal: Signal, qty: float, candles_15m: 
             save_trade(asdict(trade))
             if candles_15m:
                 from db import save_candle_snapshot
-                save_candle_snapshot(trade.id, candles_15m[-50:])
+                save_candle_snapshot(trade.id, candles_15m[-100:], entry_ts=candles_15m[-1][0])
             return trade
         except Exception as e:
             logger.error(f"Order mislukt: {e}")
@@ -397,6 +400,10 @@ def manage_open_trades(exchange, candles_15m):
             trade.status = "closed"
             trade.exit_price = curr_price
             update_trade(asdict(trade))
+            from db import get_trade_candles, save_candle_snapshot
+            snap = get_trade_candles(trade.id)
+            entry_ts = snap.get("entry_ts") if isinstance(snap, dict) else None
+            save_candle_snapshot(trade.id, candles_15m[-100:], entry_ts=entry_ts)
             _update_setup_health()
 
             _record_equity()
@@ -616,7 +623,7 @@ def run_bot():
 
             # ── Marktdata ─────────────────────────────────────────────────────
             candles_5m  = get_candles(exchange, state.symbol, '5m',  limit=60)
-            candles_15m = get_candles(exchange, state.symbol, '15m', limit=100)
+            candles_15m = get_candles(exchange, state.symbol, '15m', limit=150)
             candles_1h  = get_candles(exchange, state.symbol, '1h',  limit=50)
             candles_4h  = get_candles(exchange, state.symbol, '4h',  limit=30)
 
