@@ -645,7 +645,7 @@ def calc_atr(candles: list, period: int = 14) -> float:
 # ─── Context Score ────────────────────────────────────────────────────────────
 
 def calculate_context_score(candles_15m: list, candles_1h: list, candles_4h: list,
-                             signal, all_levels: list) -> dict:
+                             signal, all_levels: list, scalp_mode: bool = False) -> dict:
     """
     Score 0-100. ATR SL check is mandatory — if it fails, score=0 and setup is invalid.
     Returns dict with 'score' (int), 'valid' (bool), 'breakdown' (dict of factor->points).
@@ -653,10 +653,11 @@ def calculate_context_score(candles_15m: list, candles_1h: list, candles_4h: lis
     breakdown = {}
     score = 0
 
-    # ── Mandatory: SL >= 1.5× ATR14 ──────────────────────────────────────────
+    # ── Mandatory: SL >= ATR minimum (1.0× scalp, 1.5× daytrade) ────────────
+    atr_multiplier = 1.0 if scalp_mode else 1.5
     atr14 = calc_atr(candles_15m, 14)
     sl_dist = abs(signal.entry - signal.stop_loss)
-    if atr14 > 0 and sl_dist < atr14 * 1.5:
+    if atr14 > 0 and sl_dist < atr14 * atr_multiplier:
         return {'score': 0, 'valid': False, 'breakdown': {'atr_sl': 0}}
     breakdown['atr_sl'] = 15
     score += 15
@@ -837,7 +838,7 @@ def analyze(candles_15m: list, candles_1h: list, cooldown_candles: int = 0,
                 signal.tp3 = signal.entry - risk * 3
 
         # Context score
-        ctx = calculate_context_score(candles_15m, candles_1h, candles_4h or [], signal, all_levels)
+        ctx = calculate_context_score(candles_15m, candles_1h, candles_4h or [], signal, all_levels, scalp_mode=scalp_mode)
         if not ctx['valid']:
             logger.info(f"Signal afgewezen: context score te laag ({ctx['score']}/100)")
             return None
