@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import LiveCandleChart from "./LiveCandleChart";
 import {
   AreaChart, Area,
   BarChart, Bar,
@@ -1650,6 +1651,11 @@ export default function Dashboard() {
             <EquityCurve history={stats?.equity_history} />
           </div>
         </div>
+      </div>
+
+      {/* ── Live Candle Chart ──────────────────────────────────────────────── */}
+      <div style={{ marginBottom: 20 }}>
+        <LiveCandleChart trades={allTrades} />
       </div>
 
       {/* ── Analytics ──────────────────────────────────────────────────────── */}
