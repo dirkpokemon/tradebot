@@ -363,15 +363,19 @@ def trail_sl_to_structure(trade: Trade, candles: list, phase: int):
                 logger.info(f"SL verschoven naar swing high: {trade.stop_loss:.0f} → {new_sl:.0f} (fase {phase})")
                 trade.stop_loss = new_sl
 
-def manage_open_trades(exchange, candles_15m):
+def manage_open_trades(exchange, candles_15m, curr_price: float = None):
     """
     4-tranche uitstap strategie:
     - TP1 (25%) → SL naar breakeven
     - TP2 (25%) → SL naar laatste swing low/high
     - TP3 (25%) → SL naar nieuwer swing punt
     - Runner (25%) → SL blijft trailen totdat SL geraakt wordt
+
+    curr_price: optioneel — gebruik 5m close als die verser is dan de 15m close (scalp mode).
+                SL trailing blijft altijd gebaseerd op 15m structuur.
     """
-    curr_price = candles_15m[-1][4]
+    if curr_price is None:
+        curr_price = candles_15m[-1][4]
 
     for trade in state.trades:
         if trade.status == "closed":
@@ -667,7 +671,15 @@ def run_bot():
                 else:
                     state.last_candle_time = curr_15m_ts
 
-                manage_open_trades(exchange, candles_15m)
+                # Scalp/both: gebruik de verse 5m slotkoers als TP/SL check prijs,
+                # zodat trades die op een 5m close raken niet wachten op de volgende 15m close.
+                # SL trailing blijft gebaseerd op 15m structuur (via candles_15m).
+                mgmt_price = (
+                    candles_5m[-1][4]
+                    if state.trade_mode in ('scalp', 'both') and new_5m
+                    else None  # manage_open_trades valt terug op candles_15m[-1][4]
+                )
+                manage_open_trades(exchange, candles_15m, curr_price=mgmt_price)
 
                 open_count = sum(1 for t in state.trades if t.status != "closed")
                 signal         = None
