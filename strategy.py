@@ -770,8 +770,9 @@ def analyze(candles_15m: list, candles_1h: list, cooldown_candles: int = 0,
     levels_4h  = find_key_levels(candles_4h) if candles_4h and len(candles_4h) >= 10 else []
     all_levels = levels_4h + levels_1h + levels_15m
 
+    mode_label = "[SCALP]" if scalp_mode else "[DAYTRADE]"
     logger.info(
-        f"Structuur 4h: {structure_4h or '—'} | 1h: {structure_1h} | 15m: {structure_15m} | "
+        f"{mode_label} Structuur 4h: {structure_4h or '—'} | 1h: {structure_1h} | 15m: {structure_15m} | "
         f"Levels: {len(all_levels)} | Sessie: {session_name}"
     )
 
@@ -852,7 +853,7 @@ def analyze(candles_15m: list, candles_1h: list, cooldown_candles: int = 0,
         signal.valid_until = (now + timedelta(minutes=30)).strftime('%Y-%m-%dT%H:%M:%SZ')
 
         logger.info(
-            f"Signal: {signal.setup_type.upper()} {signal.side.upper()} | "
+            f"{mode_label} Signal: {signal.setup_type.upper()} {signal.side.upper()} | "
             f"{signal.reason} | R:R={rr:.1f} | sessie={session_name} | "
             f"score={ctx['score']}/100 | geldig tot {signal.valid_until}"
         )
