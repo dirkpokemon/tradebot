@@ -64,7 +64,8 @@ class BotState:
     # Live price polling: timestamp van laatste 60s check
     last_live_check: float = 0.0
     # Setup gezondheid: setups die tijdelijk uitgeschakeld zijn
-    disabled_setups: list = field(default_factory=list)  # ['rotation', 'range', ...]
+    disabled_setups: list = field(default_factory=list)  # ['rotation', 'continuation', ...]
+    sl_cooldown_candles: int = 0  # candles seit laatste SL; 1-4 = cooldown actief, 0 = vrij
     # Trade mode en human approval
     trade_mode: str = "daytrade"   # "daytrade" | "scalp" | "both"
     human_approval: bool = False
@@ -415,6 +416,7 @@ def manage_open_trades(exchange, candles_15m, curr_price: float = None):
 
             _record_equity()
             state.consecutive_stops += 1
+            state.sl_cooldown_candles = 1  # start 5-candle cooldown (75 min op 15m)
             send_telegram(
                 f"❌ <b>SL HIT</b>\n"
                 f"{trade.setup_type.upper()} {trade.side.upper()} {trade.symbol}\n"
@@ -685,12 +687,20 @@ def run_bot():
                 signal         = None
                 effective_mode = state.trade_mode
 
+                # SL-cooldown bijhouden: tel elke nieuwe 15m candle op
+                if new_15m and state.sl_cooldown_candles > 0:
+                    state.sl_cooldown_candles += 1
+                    if state.sl_cooldown_candles >= 5:
+                        state.sl_cooldown_candles = 0  # cooldown voorbij
+                        logger.info("SL-cooldown voorbij — nieuwe setups worden weer gezocht")
+
                 if open_count == 0:
                     if state.trade_mode == 'both':
                         # Daytrade heeft prioriteit op nieuwe 15m candle
                         if new_15m:
                             signal = analyze(
                                 candles_15m, candles_1h,
+                                cooldown_candles=state.sl_cooldown_candles,
                                 candles_4h=candles_4h,
                                 candles_5m=candles_5m,
                                 disabled_setups=state.disabled_setups,
@@ -702,6 +712,7 @@ def run_bot():
                         if not signal and new_5m:
                             signal = analyze(
                                 candles_5m, candles_15m,
+                                cooldown_candles=state.sl_cooldown_candles,
                                 candles_4h=None,
                                 candles_5m=None,
                                 disabled_setups=list(set(state.disabled_setups) | {'rotation', 'continuation'}),
@@ -713,6 +724,7 @@ def run_bot():
                     elif state.trade_mode == 'scalp':
                         signal = analyze(
                             candles_5m, candles_15m,
+                            cooldown_candles=state.sl_cooldown_candles,
                             candles_4h=None,
                             candles_5m=None,
                             disabled_setups=list(set(state.disabled_setups) | {'rotation', 'continuation'}),
@@ -722,6 +734,7 @@ def run_bot():
                     else:
                         signal = analyze(
                             candles_15m, candles_1h,
+                            cooldown_candles=state.sl_cooldown_candles,
                             candles_4h=candles_4h,
                             candles_5m=candles_5m,
                             disabled_setups=state.disabled_setups,
