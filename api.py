@@ -148,6 +148,20 @@ def get_stats():
     }
 
 
+@app.get("/candles")
+def get_live_candles(timeframe: str = "15m", limit: int = 150):
+    try:
+        exchange = get_public_exchange()
+        symbol = state.symbol if state.symbol else "BTC/USDT"
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        return [
+            {"time": int(c[0] / 1000), "open": c[1], "high": c[2], "low": c[3], "close": c[4], "volume": c[5]}
+            for c in ohlcv
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/trades")
 def get_trades():
     return [asdict(t) for t in state.trades]
