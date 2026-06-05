@@ -3,10 +3,10 @@ DoopieCash Strategy Engine
 ==========================
 4 trade setups op 15m/1h timeframe:
 
-1. BREAKOUT    — candle sluit boven/onder key level + retest van dat level (liquiditeitszone)
-2. RANGE       — long aan onderkant, short aan bovenkant van een geïdentificeerde range
-3. CONTINUATION— pullback naar vorige constructie (oud resistance = nieuwe support) of prijsactie
-4. ROTATION    — structuurbreuk (LL/HH) + bevestiging via afwijzing (lange wick of engulfing)
+1. LIQUIDITY SWEEP — wick door een key level, sluit terug aan de andere kant (fake-out)
+2. ROTATION        — structuurbreuk (LL/HH) + bevestiging via afwijzing (lange wick of engulfing)
+3. BREAKOUT        — candle sluit boven/onder key level + retest van dat level
+4. CONTINUATION    — pullback naar vorige constructie (oud resistance = nieuwe support)
 
 Risk management:
 - Stop loss: net buiten het af te dekken prijsgebied (wick/level)
@@ -74,7 +74,7 @@ class Level:
 
 @dataclass
 class Signal:
-    setup_type: str          # 'breakout' | 'range' | 'continuation' | 'rotation'
+    setup_type: str          # 'liquidity_sweep' | 'rotation' | 'breakout' | 'continuation'
     side: str                # 'buy' | 'sell'
     entry: float
     stop_loss: float
@@ -154,54 +154,6 @@ def find_key_levels(candles, tolerance: float = 0.002) -> list[Level]:
         for p, v in levels.items()
         if v['strength'] >= 1  # alle swing levels meenemen; sterkere krijgen hogere confidence
     ]
-
-def detect_range(candles, lookback: int = 40, tolerance: float = 0.010):
-    """
-    Detecteer een echte consolidatierange.
-    Vereisten:
-    - Range breedte 2%–4% (strak gedefinieerd)
-    - Minimaal 4 touches van zowel high als low zone
-    - Prijs wisselt minstens 8x van kant (boven/onder midden)
-    - Laatste candle mag range NIET al hebben verlaten
-    """
-    if len(candles) < lookback:
-        return None
-
-    recent = candles[-lookback:]
-    n = len(recent)
-
-    highs = [c[2] for c in recent]
-    lows  = [c[3] for c in recent]
-
-    # Gebruik 88e en 12e percentiel om extreme wicks te filteren
-    range_high = sorted(highs)[int(n * 0.88)]
-    range_low  = sorted(lows)[int(n * 0.12)]
-    range_size = (range_high - range_low) / range_low
-
-    # Strakke grootte: 2%–4%
-    if range_size < 0.02 or range_size > 0.04:
-        return None
-
-    mid = (range_high + range_low) / 2
-
-    # Prijs moet echt heen en weer bewegen: minimaal 8 candles elke kant
-    above_mid = sum(1 for c in recent if c[4] > mid)
-    below_mid = sum(1 for c in recent if c[4] < mid)
-    if above_mid < 8 or below_mid < 8:
-        return None
-
-    # Minimaal 4 touches per zone
-    touches_high = sum(1 for c in recent if c[2] >= range_high * (1 - tolerance))
-    touches_low  = sum(1 for c in recent if c[3] <= range_low  * (1 + tolerance))
-    if touches_high < 4 or touches_low < 4:
-        return None
-
-    # Laatste candle moet nog binnen de range zitten
-    last_close = candles[-1][4]
-    if last_close > range_high * 1.005 or last_close < range_low * 0.995:
-        return None
-
-    return (range_low, range_high)
 
 # ─── Candlestick Helpers ───────────────────────────────────────────────────────
 
@@ -445,65 +397,6 @@ def check_breakout(candles, key_levels: list[Level], structure: str,
     return None
 
 
-def check_range(candles, structure: str = 'ranging') -> Optional[Signal]:
-    """
-    Range trade:
-    - Long aan onderkant — alleen in uptrend of ranging (niet tegen downtrend in)
-    - Short aan bovenkant — alleen in downtrend of ranging (niet tegen uptrend in)
-    - Vereist minimaal 2 bewezen bounces van het level (niet eerste aanraking)
-    """
-    result = detect_range(candles)
-    if not result:
-        return None
-
-    range_low, range_high = result
-    close = candles[-1][4]
-    low   = candles[-1][3]
-    high  = candles[-1][2]
-    tolerance = (range_high - range_low) * 0.06
-
-    # Tel bounces: hoeveel keer is prijs al van dit level afgestuiterd?
-    recent_closes = [c[4] for c in candles[-30:]]
-    bounces_low  = sum(1 for p in recent_closes if abs(p - range_low)  / range_low  < 0.008)
-    bounces_high = sum(1 for p in recent_closes if abs(p - range_high) / range_high < 0.008)
-
-    range_levels = [
-        Level(price=range_high, strength=3, type='resistance'),
-        Level(price=range_low,  strength=3, type='support'),
-    ]
-
-    # Minimaal 3 bewezen bounces + trendfilter
-    near_low  = abs(close - range_low)  < tolerance
-    near_high = abs(close - range_high) < tolerance
-
-    if (near_low and bounces_low >= 3 and
-            structure in ('uptrend', 'ranging') and
-            confirmation_candle(candles, 'bullish')):
-        sl = low - (range_high - range_low) * 0.08   # ruimere SL buffer
-        tp1, tp2, tp3 = find_tp_levels(close, 'buy', range_levels, candles)
-        tp3 = min(tp3, range_high * 0.995)
-        return Signal(
-            setup_type='range', side='buy',
-            entry=close, stop_loss=sl, tp1=tp1, tp2=tp2, tp3=tp3,
-            reason=f"Range long onderkant ({range_low:.0f}–{range_high:.0f}, {bounces_low} bounces)",
-            confidence=0.70
-        )
-
-    if (near_high and bounces_high >= 3 and
-            structure in ('downtrend', 'ranging') and
-            confirmation_candle(candles, 'bearish')):
-        sl = high + (range_high - range_low) * 0.08  # ruimere SL buffer
-        tp1, tp2, tp3 = find_tp_levels(close, 'sell', range_levels, candles)
-        tp3 = max(tp3, range_low * 1.005)
-        return Signal(
-            setup_type='range', side='sell',
-            entry=close, stop_loss=sl, tp1=tp1, tp2=tp2, tp3=tp3,
-            reason=f"Range short bovenkant ({range_low:.0f}–{range_high:.0f}, {bounces_high} bounces)",
-            confidence=0.70
-        )
-    return None
-
-
 def check_continuation(candles, key_levels: list[Level], structure: str,
                        candles_5m: list = None) -> Optional[Signal]:
     """
@@ -736,12 +629,12 @@ def analyze(candles_15m: list, candles_1h: list, cooldown_candles: int = 0,
     """
     Analyseer de markt op alle 4 DoopieCash setups.
     Gebruikt 4h (indien opgegeven) als macro-bias, 1h voor trendrichting, 15m voor instap.
-    Prioriteit: Rotation > Breakout > Continuation > Range
+    Prioriteit: liquidity_sweep > rotation > breakout > continuation
 
     cooldown_candles: aantal candles sinds laatste SL — geen trades tijdens cooldown.
     candles_4h: optioneel; als opgegeven wordt alleen getraded in de richting van de 4h trend.
     session_filter: niet meer gebruikt (altijd False), bewaard voor compatibiliteit.
-    scalp_mode: als True, gebruik tightere SL minimum en vaste R:R TP levels.
+    scalp_mode: als True, gebruik tightere SL minimum (1.0× ATR) en vaste 1R/2R/3R TP levels.
     """
     if len(candles_15m) < 30 or len(candles_1h) < 20:
         logger.warning("Niet genoeg candles voor analyse")
