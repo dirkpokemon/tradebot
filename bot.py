@@ -8,8 +8,7 @@ from typing import Optional
 from dataclasses import dataclass, field, asdict
 
 from strategy import analyze, Signal, get_swing_points, calc_atr
-from db import (init_db, save_trade, update_trade, load_trades, clear_trades as db_clear_trades,
-                save_pending_signal, update_pending_signal_status)
+from db import init_db, save_trade, update_trade, load_trades, clear_trades as db_clear_trades
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
@@ -66,18 +65,10 @@ class BotState:
     # Setup gezondheid: setups die tijdelijk uitgeschakeld zijn
     disabled_setups: list = field(default_factory=list)  # ['rotation', 'continuation', ...]
     sl_cooldown_candles: int = 0  # candles seit laatste SL; 1-4 = cooldown actief, 0 = vrij
-    # Trade mode en human approval
     trade_mode: str = "daytrade"   # "daytrade" | "scalp" | "both"
-    human_approval: bool = False
-    pending_count: int = 0
     last_5m_ts: str = ""           # alleen gebruikt in 'both' mode
 
 state = BotState()
-
-import threading
-_pending_lock = threading.Lock()
-pending_signals: dict = {}  # signal_id → {signal, exchange, qty, candles_15m, expires_at}
-
 
 def _record_equity():
     snap = (state.sim_balance + state.total_pnl) if state.sim_mode else state.equity
@@ -102,92 +93,6 @@ def send_telegram(message: str):
         )
     except Exception as e:
         logger.warning(f"Telegram melding mislukt: {e}")
-
-
-def send_approval_request(signal, exchange, qty, candles_15m_snap, trade_mode_override=None):
-    """Stuur een goedkeuringsverzoek via Telegram voor een gevonden signaal."""
-    token   = os.environ.get('TELEGRAM_BOT_TOKEN', '')
-    chat_id = os.environ.get('TELEGRAM_CHAT_ID', '')
-    if not token or not chat_id:
-        logger.warning("Telegram niet geconfigureerd — goedkeuringsverzoek overgeslagen")
-        return
-
-    signal_id = f"S{int(time.time()) % 99999:05d}"
-    now_t     = time.time()
-    expires   = now_t + 600  # 10 minuten
-
-    ps_record = {
-        'id':                signal_id,
-        'setup_type':        signal.setup_type,
-        'side':              signal.side,
-        'entry':             signal.entry,
-        'stop_loss':         signal.stop_loss,
-        'tp1':               signal.tp1,
-        'tp2':               signal.tp2,
-        'tp3':               signal.tp3,
-        'reason':            signal.reason,
-        'context_score':     signal.context_score,
-        'context_breakdown': signal.context_breakdown,
-        'symbol':            state.symbol,
-        'quantity':          qty,
-        'created_at':        now_t,
-        'expires_at':        expires,
-        'timestamp':         datetime.utcnow().isoformat(),
-    }
-
-    with _pending_lock:
-        pending_signals[signal_id] = {
-            'signal':               signal,
-            'exchange':             exchange,
-            'qty':                  qty,
-            'candles_15m':          candles_15m_snap,
-            'expires_at':           expires,
-            'ps_record':            ps_record,
-            'trade_mode_override':  trade_mode_override,
-        }
-
-    try:
-        save_pending_signal(ps_record)
-    except Exception as e:
-        logger.warning(f"Kon pending signal niet opslaan in DB: {e}")
-
-    breakdown = signal.context_breakdown
-    message = (
-        f"🔔 <b>SETUP GEVONDEN — GOEDKEURING NODIG</b>\n\n"
-        f"<b>{signal.setup_type.upper()} {signal.side.upper()}</b> {state.symbol}\n"
-        f"Entry: {signal.entry:.0f} | SL: {signal.stop_loss:.0f}\n"
-        f"TP1: {signal.tp1:.0f} | TP2: {signal.tp2:.0f} | TP3: {signal.tp3:.0f}\n\n"
-        f"📊 <b>Context Score: {signal.context_score}/100</b>\n"
-        f"• 4H trend: {breakdown.get('trend_4h', 0)}pts\n"
-        f"• 1H trend: {breakdown.get('trend_1h', 0)}pts\n"
-        f"• Volume: {breakdown.get('volume', 0)}pts\n"
-        f"• Level schoon: {breakdown.get('level_clean', 0)}pts\n"
-        f"• Round number: {breakdown.get('round_number', 0)}pts\n"
-        f"• Inside/Doji: {breakdown.get('inside_doji', 0)}pts\n"
-        f"• ATR SL: {breakdown.get('atr_sl', 0)}pts\n\n"
-        f"<i>{signal.reason}</i>\n\n"
-        f"⏰ Vervalt in 10 minuten"
-    )
-
-    reply_markup = {"inline_keyboard": [[
-        {"text": "✅ GOEDKEUREN", "callback_data": f"approve:{signal_id}"},
-        {"text": "❌ OVERSLAAN",  "callback_data": f"skip:{signal_id}"},
-    ]]}
-
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={
-                "chat_id":      chat_id,
-                "text":         message,
-                "parse_mode":   "HTML",
-                "reply_markup": reply_markup,
-            },
-            timeout=5,
-        )
-        logger.info(f"Goedkeuringsverzoek verstuurd: {signal_id} ({signal.setup_type} {signal.side})")
-    except Exception as e:
-        logger.warning(f"Telegram goedkeuringsverzoek mislukt: {e}")
 
 
 def get_public_exchange():
@@ -565,9 +470,8 @@ def _check_open_trades_live(exchange):
 
 
 def run_bot():
-    state.sim_mode     = os.environ.get('SIM_MODE', 'true').lower() == 'true'
-    state.trade_mode   = os.environ.get('TRADE_MODE', 'daytrade').lower()
-    state.human_approval = os.environ.get('HUMAN_APPROVAL', 'false').lower() == 'true'
+    state.sim_mode   = os.environ.get('SIM_MODE', 'true').lower() == 'true'
+    state.trade_mode = os.environ.get('TRADE_MODE', 'daytrade').lower()
     mode_label = "PAPER TRADING" if state.sim_mode else "LIVE TRADING"
 
     # DB initialiseren en bestaande trades laden
@@ -638,19 +542,6 @@ def run_bot():
 
             curr_5m_ts  = str(candles_5m[-1][0])
             curr_15m_ts = str(candles_15m[-1][0])
-
-            # Expire pending signals
-            now_t = time.time()
-            with _pending_lock:
-                expired_ids = [sid for sid, ps in pending_signals.items() if ps['expires_at'] < now_t]
-                for sid in expired_ids:
-                    try:
-                        update_pending_signal_status(sid, 'expired')
-                    except Exception:
-                        pass
-                    del pending_signals[sid]
-                    send_telegram(f"⏰ Setup {sid} vervallen (10 min timeout)")
-            state.pending_count = len(pending_signals)
 
             # Bepaal welke candles nieuw zijn
             new_15m = curr_15m_ts != state.last_candle_time
@@ -765,13 +656,9 @@ def run_bot():
                         signal.stop_loss, state.risk_per_trade, vol_scale
                     )
                     if qty > 0:
-                        if state.human_approval:
-                            send_approval_request(signal, exchange, qty, candles_15m, trade_mode_override=effective_mode)
-                            state.pending_count = len([p for p in pending_signals.values() if p['expires_at'] > time.time()])
-                        else:
-                            trade = place_order(exchange, state.symbol, signal, qty, candles_15m, trade_mode_override=effective_mode)
-                            if trade:
-                                state.trades.append(trade)
+                        trade = place_order(exchange, state.symbol, signal, qty, candles_15m, trade_mode_override=effective_mode)
+                        if trade:
+                            state.trades.append(trade)
                 else:
                     state.last_signal = "none"
                     state.last_setup  = "none"

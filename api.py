@@ -7,11 +7,9 @@ import threading
 import time
 import requests
 import sqlite3
-from bot import (state, run_bot, get_setup_health, SETUP_TYPES, get_public_exchange, get_exchange,
-                 pending_signals, _pending_lock, place_order)
+from bot import state, run_bot, get_setup_health, SETUP_TYPES, get_public_exchange, get_exchange
 from dataclasses import asdict
-from db import (clear_trades as db_clear_trades, get_trade_candles, save_review, load_reviews_summary,
-                save_pending_signal, update_pending_signal_status, load_pending_signals)
+from db import clear_trades as db_clear_trades, get_trade_candles, save_review, load_reviews_summary
 from backtest import (
     BacktestConfig, backtest_state, run_backtest,
     monte_carlo_state, run_monte_carlo,
@@ -60,8 +58,6 @@ def get_status():
         "disabled_setups": state.disabled_setups,
         "setup_health": {s: get_setup_health(s) for s in SETUP_TYPES},
         "trade_mode": state.trade_mode,
-        "human_approval": state.human_approval,
-        "pending_count": state.pending_count,
     }
 
 @app.post("/start")
@@ -322,103 +318,7 @@ async def register_webhook():
 
 @app.post("/telegram/webhook", include_in_schema=False)
 async def telegram_webhook(request: Request):
-    data = await request.json()
-    if 'callback_query' not in data:
-        return {"ok": True}
-
-    query    = data['callback_query']
-    cb_data  = query.get('data', '')
-    chat_id  = query['message']['chat']['id']
-    msg_id   = query['message']['message_id']
-    token    = os.environ.get('TELEGRAM_BOT_TOKEN', '')
-
-    def answer_callback(text=""):
-        if token:
-            try:
-                requests.post(f"https://api.telegram.org/bot{token}/answerCallbackQuery",
-                              json={"callback_query_id": query['id'], "text": text}, timeout=3)
-            except Exception:
-                pass
-
-    def edit_message(text):
-        if token:
-            try:
-                requests.post(f"https://api.telegram.org/bot{token}/editMessageText",
-                              json={"chat_id": chat_id, "message_id": msg_id,
-                                    "text": text, "parse_mode": "HTML"}, timeout=3)
-            except Exception:
-                pass
-
-    def send_msg(text, reply_markup=None):
-        if token:
-            payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
-            if reply_markup:
-                payload["reply_markup"] = reply_markup
-            try:
-                requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                              json=payload, timeout=3)
-            except Exception:
-                pass
-
-    if cb_data.startswith('approve:'):
-        signal_id = cb_data.split(':', 1)[1]
-        with _pending_lock:
-            ps = pending_signals.pop(signal_id, None)
-        if ps is None:
-            answer_callback("⚠️ Setup niet meer beschikbaar (verlopen of al verwerkt)")
-            return {"ok": True}
-        try:
-            exchange = ps['exchange']
-            signal   = ps['signal']
-            qty      = ps['qty']
-            candles  = ps['candles_15m']
-            trade = place_order(exchange, state.symbol, signal, qty, candles, trade_mode_override=ps.get('trade_mode_override'))
-            if trade:
-                state.trades.append(trade)
-                update_pending_signal_status(signal_id, 'approved')
-                answer_callback("✅ Order geplaatst!")
-                edit_message(f"✅ <b>GOEDGEKEURD</b> — {signal.setup_type.upper()} {signal.side.upper()} @ {signal.entry:.0f}")
-            else:
-                answer_callback("❌ Order mislukt")
-        except Exception as e:
-            answer_callback(f"Fout: {e}")
-
-    elif cb_data.startswith('skip:'):
-        signal_id = cb_data.split(':', 1)[1]
-        with _pending_lock:
-            ps = pending_signals.pop(signal_id, None)
-        if ps:
-            update_pending_signal_status(signal_id, 'skipped')
-        answer_callback("Setup overgeslagen")
-        edit_message(f"❌ <b>OVERGESLAGEN</b> — {signal_id}")
-        send_msg(
-            f"Waarom heb je <b>{signal_id}</b> overgeslagen?",
-            reply_markup={"inline_keyboard": [[
-                {"text": "Level te zwak",      "callback_data": f"reason:{signal_id}:level_weak"},
-                {"text": "Geen bevestiging",   "callback_data": f"reason:{signal_id}:no_confirm"},
-            ], [
-                {"text": "Trend klopt niet",   "callback_data": f"reason:{signal_id}:wrong_trend"},
-                {"text": "Timing slecht",      "callback_data": f"reason:{signal_id}:bad_timing"},
-            ], [
-                {"text": "Anders",             "callback_data": f"reason:{signal_id}:other"},
-            ]]}
-        )
-
-    elif cb_data.startswith('reason:'):
-        parts = cb_data.split(':', 2)
-        if len(parts) == 3:
-            _, signal_id, reason = parts
-            update_pending_signal_status(signal_id, 'skipped', reason)
-            answer_callback("Reden opgeslagen, bedankt!")
-            edit_message(f"📝 Reden opgeslagen: <b>{reason.replace('_', ' ')}</b>")
-
-    state.pending_count = len(pending_signals)
     return {"ok": True}
-
-
-@app.get("/pending")
-def get_pending():
-    return {"pending": load_pending_signals('pending'), "count": len(pending_signals)}
 
 
 @app.get("/learning_stats")
