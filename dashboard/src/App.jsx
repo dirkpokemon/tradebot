@@ -1290,72 +1290,6 @@ function MonteCarloPanel() {
   );
 }
 
-// ─── Pending Approval Panel ───────────────────────────────────────────────────
-
-function PendingApprovalPanel({ pendingCount }) {
-  const [pending, setPending] = useState([]);
-
-  useEffect(() => {
-    if (pendingCount > 0) {
-      fetch(`${API_URL}/pending`).then(r => r.json()).then(d => setPending(d.pending || []));
-    } else {
-      setPending([]);
-    }
-  }, [pendingCount]);
-
-  if (!pendingCount && pending.length === 0) return null;
-
-  return (
-    <div style={{
-      background: C.yellowBg, border: `1px solid ${C.yellow}44`,
-      borderRadius: 14, padding: 20, boxShadow: C.shadow, marginBottom: 20,
-    }}>
-      <SectionLabel>Wachtend op goedkeuring</SectionLabel>
-      {pending.map(ps => (
-        <div key={ps.id} style={{
-          background: C.card, borderRadius: 10, padding: 14, marginBottom: 8,
-          border: `1px solid ${C.border}`,
-        }}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <span style={{ fontWeight: 800, color: ps.side === "buy" ? C.green : C.red }}>
-                {ps.side === "buy" ? "▲" : "▼"} {ps.setup_type?.replace("_", " ").toUpperCase()}
-              </span>
-              <Tag color={C.yellow} bg={C.yellowBg}>PENDING</Tag>
-            </div>
-            <span style={{ fontSize: 10, color: C.muted }}>
-              Vervalt in {Math.max(0, Math.round((ps.expires_at - Date.now() / 1000) / 60))}m
-            </span>
-          </div>
-          <div style={{ display: "flex", gap: 16, fontSize: 11, color: C.muted, marginBottom: 8 }}>
-            <span>Entry: <b style={{ color: C.text }}>{fmtP(ps.entry)}</b></span>
-            <span>SL: <b style={{ color: C.red }}>{fmtP(ps.stop_loss)}</b></span>
-            <span>Score: <b style={{ color: ps.context_score >= 70 ? C.green : C.yellow }}>{ps.context_score}/100</b></span>
-          </div>
-          <div style={{ marginBottom: 8 }}>
-            <div style={{ height: 6, background: C.border, borderRadius: 99, overflow: "hidden" }}>
-              <div style={{
-                height: "100%", borderRadius: 99, transition: "width 0.4s",
-                width: `${ps.context_score}%`,
-                background: ps.context_score >= 70 ? C.green : ps.context_score >= 50 ? C.yellow : C.red,
-              }} />
-            </div>
-          </div>
-          <div style={{ fontSize: 10, color: C.dim, fontStyle: "italic" }}>{ps.reason}</div>
-          <div style={{ fontSize: 9, color: C.dim, marginTop: 4 }}>
-            Goedkeuring via Telegram — knoppen in chat
-          </div>
-        </div>
-      ))}
-      {pendingCount > 0 && pending.length === 0 && (
-        <div style={{ fontSize: 11, color: C.muted }}>
-          {pendingCount} setup(s) wachten — controleer Telegram voor goedkeuring
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ─── Learning Stats Panel ─────────────────────────────────────────────────────
 
 const FACTOR_LABELS = {
@@ -1563,7 +1497,6 @@ export default function Dashboard() {
       `}</style>
 
       <CircuitBreakerBanner status={status} />
-      <PendingApprovalPanel pendingCount={status?.pending_count || 0} />
 
       {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
@@ -1583,9 +1516,6 @@ export default function Dashboard() {
             <Tag color={status.trade_mode === 'both' ? C.green : C.blue} bg={status.trade_mode === 'both' ? C.greenBg : C.blueBg}>
               {status.trade_mode === 'both' ? 'DAYTRADE + SCALP' : status.trade_mode.toUpperCase()}
             </Tag>
-          )}
-          {status?.human_approval && (
-            <Tag color={C.yellow} bg={C.yellowBg}>HUMAN APPROVAL</Tag>
           )}
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <div className={isRunning ? "pulse" : ""} style={{
