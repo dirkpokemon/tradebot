@@ -206,6 +206,7 @@ class BacktestRequest(BaseModel):
     risk_per_trade: float = 0.01
     starting_balance: float = 10000.0
     session_filter: bool  = True
+    trade_mode: str       = "daytrade"  # 'daytrade' | 'scalp' | 'both'
 
 def _run_backtest_thread(config: BacktestConfig):
     try:
@@ -227,6 +228,8 @@ def _run_backtest_thread(config: BacktestConfig):
 def start_backtest(req: BacktestRequest):
     if backtest_state.running:
         raise HTTPException(status_code=400, detail="Backtest is al bezig")
+    if req.trade_mode not in ('daytrade', 'scalp', 'both'):
+        raise HTTPException(status_code=400, detail="trade_mode moet 'daytrade', 'scalp' of 'both' zijn")
     config = BacktestConfig(
         symbol=req.symbol,
         days=req.days,
@@ -234,10 +237,11 @@ def start_backtest(req: BacktestRequest):
         risk_per_trade=req.risk_per_trade,
         starting_balance=req.starting_balance,
         session_filter=req.session_filter,
+        trade_mode=req.trade_mode,
     )
     t = threading.Thread(target=_run_backtest_thread, args=(config,), daemon=True)
     t.start()
-    return {"message": f"Backtest gestart: {req.symbol} | {req.days}d | test={int(req.test_pct*100)}%"}
+    return {"message": f"Backtest gestart: {req.symbol} | {req.days}d | test={int(req.test_pct*100)}% | mode={req.trade_mode}"}
 
 @app.get("/backtest")
 def get_backtest():

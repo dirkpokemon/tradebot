@@ -478,7 +478,8 @@ def check_rotation(candles, structure: str, candles_5m: list = None) -> Optional
     - Bevestigingscandle moet het gebroken niveau 'winnen': sluiten voorbij het
       swingpunt, niet er slechts doorheen wikken
     - Bevestiging: rejection candle OF engulfing
-    - Volume filter: bevestigingscandle moet > 1.5× gemiddeld volume tonen
+    - Volume filter: bevestigingscandle moet > 1.2× gemiddeld volume tonen
+      (1.5× bleek in combinatie met de overige eisen te zelden samen te vallen)
     """
     if len(candles) < 20:
         return None
@@ -502,9 +503,13 @@ def check_rotation(candles, structure: str, candles_5m: list = None) -> Optional
         [Level(price=p, strength=2, type='resistance') for _, p in swing_highs[-4:]]
     )
 
-    # Bevestigingscandle moet duidelijk verhoogd volume tonen (DoopieCash: > 1.5× gemiddeld)
+    # Bevestigingscandle moet verhoogd volume tonen. DoopieCash noemde >1.5× gemiddeld,
+    # maar dat bleek in combinatie met de overige eisen (close-confirmed structuurbreuk +
+    # rejection/engulfing + gain-the-level) zo zelden samen te vallen dat rotation
+    # nauwelijks nog signaleerde. 1.2× is nog altijd duidelijk bovengemiddeld, maar
+    # laat de andere — striktere — voorwaarden het zware werk doen.
     avg_vol = avg_volume(candles, 20)
-    strong_volume = avg_vol == 0 or candles[-1][5] > avg_vol * 1.5
+    strong_volume = avg_vol == 0 or candles[-1][5] > avg_vol * 1.2
 
     # Rotation naar bearish: LL moet met een CLOSE onder de vorige LL bevestigd zijn
     structure_break_bear = (
