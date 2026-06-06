@@ -336,7 +336,7 @@ def manage_open_trades(exchange, candles_15m, curr_price: float = None):
 
             _record_equity()
             state.consecutive_stops += 1
-            state.sl_cooldown_candles = 1  # start 2-candle cooldown (30 min op 15m)
+            state.sl_cooldown_candles = 1  # start cooldown (daytrade: 2 candles op 15m, scalp: 1 candle op 5m)
             send_telegram(
                 f"❌ <b>SL HIT</b>\n"
                 f"{trade.setup_type.upper()} {trade.side.upper()} {trade.symbol}\n"
@@ -577,6 +577,10 @@ def run_bot():
             candles_15m = get_candles(exchange, state.symbol, '15m', limit=150)
             candles_1h  = get_candles(exchange, state.symbol, '1h',  limit=50)
             candles_4h  = get_candles(exchange, state.symbol, '4h',  limit=30)
+            # 1m alleen ophalen voor scalp-paden — extra entry-timeframe naast 5m
+            # (DoopieCash frequentie-regel: scalp checkt setups op 5m én 1m)
+            candles_1m  = get_candles(exchange, state.symbol, '1m', limit=90) \
+                if state.trade_mode in ('scalp', 'both') else None
 
             curr_5m_ts  = str(candles_5m[-1][0])
             curr_15m_ts = str(candles_15m[-1][0])
@@ -617,8 +621,10 @@ def run_bot():
                 signal         = None
                 effective_mode = state.trade_mode
 
-                # SL-cooldown bijhouden: tel elke nieuwe 15m candle op
-                if new_15m and state.sl_cooldown_candles > 0:
+                # SL-cooldown bijhouden: tel de candle op die bij de actieve modus hoort
+                # (pure scalp = 5m candles — sneller cooldown, anders 15m candles)
+                cooldown_tick = new_5m if state.trade_mode == 'scalp' else new_15m
+                if cooldown_tick and state.sl_cooldown_candles > 0:
                     state.sl_cooldown_candles += 1
                     if state.sl_cooldown_candles >= 2:
                         state.sl_cooldown_candles = 0  # cooldown voorbij
@@ -643,8 +649,10 @@ def run_bot():
                             signal = analyze(
                                 candles_5m, candles_15m,
                                 cooldown_candles=state.sl_cooldown_candles,
+                                min_cooldown_candles=1,  # scalp: kortere cooldown — sneller weer setups zoeken
                                 candles_4h=candles_4h,
                                 candles_5m=None,
+                                candles_1m=candles_1m,
                                 disabled_setups=list(set(state.disabled_setups) | {'rotation', 'continuation'}),
                                 session_filter=False,
                                 scalp_mode=True,
@@ -657,8 +665,10 @@ def run_bot():
                         signal = analyze(
                             candles_5m, candles_15m,
                             cooldown_candles=state.sl_cooldown_candles,
+                            min_cooldown_candles=1,  # scalp: kortere cooldown — sneller weer setups zoeken
                             candles_4h=candles_4h,
                             candles_5m=None,
+                            candles_1m=candles_1m,
                             disabled_setups=list(set(state.disabled_setups) | {'rotation', 'continuation'}),
                             session_filter=False,
                             scalp_mode=True,
