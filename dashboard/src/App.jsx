@@ -971,7 +971,7 @@ function TradeReviewPanel({ closedTrades }) {
 // ─── Backtest Panel ───────────────────────────────────────────────────────────
 
 function BacktestPanel() {
-  const [btConfig, setBtConfig] = useState({ symbol: "BTC/USDT", days: 90, test_pct: 0.30, session_filter: true });
+  const [btConfig, setBtConfig] = useState({ symbol: "BTC/USDT", days: 90, test_pct: 0.30 });
   const [bt, setBt]     = useState(null);
   const [loading, setLoading] = useState(false);
 
@@ -987,7 +987,10 @@ function BacktestPanel() {
     await fetch(`${API_URL}/backtest`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(btConfig),
+      body: JSON.stringify({
+        ...btConfig,
+        days: Math.min(365, Math.max(30, Number(btConfig.days) || 90)),
+      }),
     });
     setLoading(false);
     pollBacktest();
@@ -1002,22 +1005,18 @@ function BacktestPanel() {
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14, alignItems: "flex-end" }}>
         <label style={{ flex: 1, minWidth: 90 }}>
-          <div style={{ fontSize: 9, color: C.muted, marginBottom: 4, letterSpacing: 1, textTransform: "uppercase" }}>Dagen</div>
+          <div style={{ fontSize: 9, color: C.muted, marginBottom: 4, letterSpacing: 1, textTransform: "uppercase" }}>Dagen (30-365)</div>
           <input type="number" min="30" max="365" value={btConfig.days}
-            onChange={e => setBtConfig({ ...btConfig, days: +e.target.value })}
+            onChange={e => setBtConfig({ ...btConfig, days: e.target.value === "" ? "" : +e.target.value })}
+            onBlur={e => setBtConfig({ ...btConfig, days: Math.min(365, Math.max(30, Number(e.target.value) || 90)) })}
             disabled={bt?.running} />
         </label>
         <label style={{ flex: 1, minWidth: 90 }}>
           <div style={{ fontSize: 9, color: C.muted, marginBottom: 4, letterSpacing: 1, textTransform: "uppercase" }}>Test %</div>
           <input type="number" min="10" max="50" step="5" value={btConfig.test_pct * 100}
-            onChange={e => setBtConfig({ ...btConfig, test_pct: +e.target.value / 100 })}
+            onChange={e => setBtConfig({ ...btConfig, test_pct: e.target.value === "" ? "" : +e.target.value / 100 })}
+            onBlur={e => setBtConfig({ ...btConfig, test_pct: Math.min(0.5, Math.max(0.1, (Number(e.target.value) || 30) / 100)) })}
             disabled={bt?.running} />
-        </label>
-        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: C.muted, paddingBottom: 8 }}>
-          <input type="checkbox" checked={btConfig.session_filter}
-            onChange={e => setBtConfig({ ...btConfig, session_filter: e.target.checked })}
-            disabled={bt?.running} />
-          Sessie filter
         </label>
         <button className="btn-primary" onClick={startBt} disabled={bt?.running || loading}
           style={{ flex: 1, minWidth: 130 }}>
