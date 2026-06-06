@@ -89,6 +89,7 @@ _MIGRATIONS = [
     "ALTER TABLE trades ADD COLUMN review_note     TEXT DEFAULT NULL",
     "ALTER TABLE trades ADD COLUMN context_score   INTEGER DEFAULT 0",
     "ALTER TABLE trades ADD COLUMN trade_mode      TEXT DEFAULT 'daytrade'",
+    "ALTER TABLE trades ADD COLUMN counter_trend   INTEGER DEFAULT 0",
 ]
 
 def _conn():
@@ -112,12 +113,12 @@ def save_trade(t: dict):
         (id, symbol, side, setup_type, entry_price, quantity, stop_loss,
          tp1, tp2, tp3, timestamp, reason, status,
          tp1_hit, tp2_hit, tp3_hit, exit_price, realized_pnl, session, valid_until,
-         review_label, review_note, context_score, trade_mode)
+         review_label, review_note, context_score, trade_mode, counter_trend)
     VALUES
         (:id, :symbol, :side, :setup_type, :entry_price, :quantity, :stop_loss,
          :tp1, :tp2, :tp3, :timestamp, :reason, :status,
          :tp1_hit, :tp2_hit, :tp3_hit, :exit_price, :realized_pnl, :session, :valid_until,
-         :review_label, :review_note, :context_score, :trade_mode)
+         :review_label, :review_note, :context_score, :trade_mode, :counter_trend)
     """
     with _conn() as c:
         c.execute(sql, {
@@ -131,6 +132,7 @@ def save_trade(t: dict):
             'review_note': t.get('review_note', None),
             'context_score': t.get('context_score', 0),
             'trade_mode': t.get('trade_mode', 'daytrade'),
+            'counter_trend': int(t.get('counter_trend', False)),
         })
 
 def update_trade(t: dict):
@@ -161,7 +163,8 @@ def load_trades() -> list[dict]:
             "tp1, tp2, tp3, timestamp, reason, status, tp1_hit, tp2_hit, tp3_hit, "
             "exit_price, realized_pnl, session, valid_until, review_label, review_note, "
             "COALESCE(context_score, 0) as context_score, "
-            "COALESCE(trade_mode, 'daytrade') as trade_mode "
+            "COALESCE(trade_mode, 'daytrade') as trade_mode, "
+            "COALESCE(counter_trend, 0) as counter_trend "
             "FROM trades ORDER BY timestamp ASC"
         ).fetchall()
     trades = []
@@ -170,6 +173,7 @@ def load_trades() -> list[dict]:
         d['tp1_hit'] = bool(d['tp1_hit'])
         d['tp2_hit'] = bool(d['tp2_hit'])
         d['tp3_hit'] = bool(d['tp3_hit'])
+        d['counter_trend'] = bool(d['counter_trend'])
         trades.append(d)
     logger.info(f"{len(trades)} trades geladen uit database")
     return trades

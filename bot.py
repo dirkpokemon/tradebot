@@ -37,6 +37,7 @@ class Trade:
     review_note: Optional[str] = None
     context_score: int = 0
     trade_mode: str = "daytrade"
+    counter_trend: bool = False   # True = setup ging tegen de 4h voorkeursrichting in
 
 @dataclass
 class BotState:
@@ -142,6 +143,7 @@ def calculate_position_size(balance: float, entry: float, stop: float,
 def place_order(exchange, symbol: str, signal: Signal, qty: float, candles_15m: list = None, trade_mode_override: str = None) -> Optional[Trade]:
     actual_trade_mode = trade_mode_override if trade_mode_override else state.trade_mode
     mode = "SIM" if state.sim_mode else "LIVE"
+    ct_tag = " ⚖️ COUNTER-TREND (halve grootte, max 1.5R)" if getattr(signal, 'is_counter_trend', False) else ""
     if state.sim_mode:
         trade = Trade(
             id=f"SIM-{len(state.trades)+1:04d}",
@@ -158,6 +160,7 @@ def place_order(exchange, symbol: str, signal: Signal, qty: float, candles_15m: 
             timestamp=datetime.utcnow().isoformat(),
             context_score=getattr(signal, 'context_score', 0),
             trade_mode=actual_trade_mode,
+            counter_trend=getattr(signal, 'is_counter_trend', False),
         )
         logger.info(
             f"[SIM] [{signal.setup_type.upper()}] {signal.side.upper()} {qty:.4f} {symbol} @ {signal.entry:.0f} | "
@@ -168,7 +171,7 @@ def place_order(exchange, symbol: str, signal: Signal, qty: float, candles_15m: 
             f"{signal.setup_type.upper()} {signal.side.upper()} {qty:.4f} {symbol}\n"
             f"Entry: {signal.entry:.0f} | SL: {signal.stop_loss:.0f}\n"
             f"TP1: {signal.tp1:.0f} | TP2: {signal.tp2:.0f} | TP3: {signal.tp3:.0f}\n"
-            f"Sessie: {signal.session} | Geldig tot: {signal.valid_until}\n"
+            f"Sessie: {signal.session} | Geldig tot: {signal.valid_until}{ct_tag}\n"
             f"<i>{signal.reason}</i>"
         )
         save_trade(asdict(trade))
@@ -194,6 +197,7 @@ def place_order(exchange, symbol: str, signal: Signal, qty: float, candles_15m: 
                 timestamp=datetime.utcnow().isoformat(),
                 context_score=getattr(signal, 'context_score', 0),
                 trade_mode=actual_trade_mode,
+                counter_trend=getattr(signal, 'is_counter_trend', False),
             )
             logger.info(
                 f"[LIVE] [{signal.setup_type.upper()}] {signal.side.upper()} {qty} {symbol} @ {signal.entry:.0f} | "
@@ -271,11 +275,17 @@ def trail_sl_to_structure(trade: Trade, candles: list, phase: int):
 
 def manage_open_trades(exchange, candles_15m, curr_price: float = None):
     """
-    4-tranche uitstap strategie:
+    Uitstap strategie — afhankelijk van trade-type:
+
+    Normale trades (mét de 4h trend) — 4-tranche exit:
     - TP1 (25%) → SL naar breakeven
     - TP2 (25%) → SL naar laatste swing low/high
     - TP3 (25%) → SL naar nieuwer swing punt
     - Runner (25%) → SL blijft trailen totdat SL geraakt wordt
+
+    Counter-trend trades (tegen de 4h trend, max 1.5R) — 2-tranche exit, geen TP3/runner:
+    - TP1 = 1R (50%) → SL naar breakeven
+    - TP2 = 1.5R (50%) → volledige exit
 
     curr_price: optioneel — gebruik 5m close als die verser is dan de 15m close (scalp mode).
                 SL trailing blijft altijd gebaseerd op 15m structuur.
@@ -286,6 +296,9 @@ def manage_open_trades(exchange, candles_15m, curr_price: float = None):
     for trade in state.trades:
         if trade.status == "closed":
             continue
+
+        is_ct = getattr(trade, 'counter_trend', False)
+        tp_fraction = 0.5 if is_ct else 0.25
 
         hit_sl = (
             (trade.side == "buy"  and curr_price <= trade.stop_loss) or
@@ -299,16 +312,18 @@ def manage_open_trades(exchange, candles_15m, curr_price: float = None):
             (trade.side == "buy"  and curr_price >= trade.tp2) or
             (trade.side == "sell" and curr_price <= trade.tp2)
         )
-        hit_tp3 = trade.tp2_hit and not trade.tp3_hit and (
+        # Counter-trend trades hebben geen TP3/runner-fase (max 1.5R, sluit volledig op TP2)
+        hit_tp3 = (not is_ct) and trade.tp2_hit and not trade.tp3_hit and (
             (trade.side == "buy"  and curr_price >= trade.tp3) or
             (trade.side == "sell" and curr_price <= trade.tp3)
         )
 
         if hit_sl:
             remaining = 1.0
-            if trade.tp1_hit: remaining -= 0.25
-            if trade.tp2_hit: remaining -= 0.25
-            if trade.tp3_hit: remaining -= 0.25
+            if trade.tp1_hit: remaining -= tp_fraction
+            if trade.tp2_hit: remaining -= tp_fraction
+            if not is_ct and trade.tp3_hit: remaining -= 0.25
+
             partial_close(exchange, trade, remaining, curr_price, "❌ SL")
             trade.status = "closed"
             trade.exit_price = curr_price
@@ -341,7 +356,7 @@ def manage_open_trades(exchange, candles_15m, curr_price: float = None):
                 )
 
         elif hit_tp1:
-            partial_close(exchange, trade, 0.25, curr_price, "✅ TP1")
+            partial_close(exchange, trade, tp_fraction, curr_price, "✅ TP1")
             trade.tp1_hit = True
             trade.status = "partial_1"
             trade.stop_loss = trade.entry_price  # → breakeven
@@ -350,13 +365,36 @@ def manage_open_trades(exchange, candles_15m, curr_price: float = None):
             state.consecutive_stops = 0
             logger.info(f"SL verschoven naar breakeven: {trade.entry_price:.0f}")
             send_telegram(
-                f"✅ <b>TP1 GERAAKT</b>\n"
+                f"✅ <b>TP1 GERAAKT</b> ({tp_fraction*100:.0f}%)\n"
                 f"{trade.setup_type.upper()} {trade.side.upper()} @ {curr_price:.0f}\n"
                 f"PnL tot nu: {trade.realized_pnl:+.2f} USDT | SL → breakeven"
+                + (" | counter-trend: max 1.5R" if is_ct else "")
+            )
+
+        elif hit_tp2 and is_ct:
+            # Counter-trend: TP2 = max target (1.5R) → volledige exit, geen TP3/runner
+            partial_close(exchange, trade, tp_fraction, curr_price, "✅ TP2 (volledige exit)")
+            trade.tp2_hit = True
+            trade.tp3_hit = True  # markeer als afgerond zodat geen runner-fase volgt
+            trade.status = "closed"
+            trade.exit_price = curr_price
+            update_trade(asdict(trade))
+            from db import get_trade_candles, save_candle_snapshot
+            snap = get_trade_candles(trade.id)
+            entry_ts = snap.get("entry_ts") if isinstance(snap, dict) else None
+            save_candle_snapshot(trade.id, candles_15m[-100:], entry_ts=entry_ts)
+            _update_setup_health()
+            _record_equity()
+            state.consecutive_stops = 0
+            send_telegram(
+                f"✅ <b>TP2 GERAAKT — VOLLEDIGE EXIT</b> (counter-trend, max 1.5R)\n"
+                f"{trade.setup_type.upper()} {trade.side.upper()} {trade.symbol}\n"
+                f"Entry: {trade.entry_price:.0f} → Exit: {curr_price:.0f}\n"
+                f"PnL: {trade.realized_pnl:+.2f} USDT"
             )
 
         elif hit_tp2:
-            partial_close(exchange, trade, 0.25, curr_price, "✅ TP2")
+            partial_close(exchange, trade, tp_fraction, curr_price, "✅ TP2")
             trade.tp2_hit = True
             trade.status = "partial_2"
             trail_sl_to_structure(trade, candles_15m, phase=2)
@@ -383,8 +421,8 @@ def manage_open_trades(exchange, candles_15m, curr_price: float = None):
                 f"PnL tot nu: {trade.realized_pnl:+.2f} USDT | Runner actief, SL trailend"
             )
 
-        elif trade.tp3_hit:
-            # Runner fase: SL continu trailen op elke nieuwe candle
+        elif trade.tp3_hit and not is_ct:
+            # Runner fase: SL continu trailen op elke nieuwe candle (alleen mét-trend trades)
             trail_sl_to_structure(trade, candles_15m, phase=4)
             update_trade(asdict(trade))
 
@@ -547,29 +585,30 @@ def run_bot():
             new_15m = curr_15m_ts != state.last_candle_time
             new_5m  = curr_5m_ts  != state.last_5m_ts
 
-            if state.trade_mode == 'both':
-                triggered = new_15m or new_5m
-            elif state.trade_mode == 'scalp':
+            # Daytrade en 'both' werken identiek: 15m heeft prioriteit, 5m is fallback
+            # wanneer 15m geen setup oplevert (DoopieCash punt 9 — meer trades genereren
+            # door ook lagere timeframes te doorzoeken i.p.v. te wachten op 15m).
+            multi_tf = state.trade_mode in ('daytrade', 'both')
+
+            if state.trade_mode == 'scalp':
                 triggered = new_5m
             else:
-                triggered = new_15m
+                triggered = new_15m or new_5m
 
             if triggered:
                 # Timestamps bijwerken
-                if state.trade_mode == 'both':
-                    if new_5m:  state.last_5m_ts = curr_5m_ts
-                    if new_15m: state.last_candle_time = curr_15m_ts
-                elif state.trade_mode == 'scalp':
+                if state.trade_mode == 'scalp':
                     state.last_5m_ts = curr_5m_ts
                 else:
-                    state.last_candle_time = curr_15m_ts
+                    if new_5m:  state.last_5m_ts = curr_5m_ts
+                    if new_15m: state.last_candle_time = curr_15m_ts
 
-                # Scalp/both: gebruik de verse 5m slotkoers als TP/SL check prijs,
+                # Scalp/multi-tf: gebruik de verse 5m slotkoers als TP/SL check prijs,
                 # zodat trades die op een 5m close raken niet wachten op de volgende 15m close.
                 # SL trailing blijft gebaseerd op 15m structuur (via candles_15m).
                 mgmt_price = (
                     candles_5m[-1][4]
-                    if state.trade_mode in ('scalp', 'both') and new_5m
+                    if (state.trade_mode == 'scalp' or multi_tf) and new_5m
                     else None  # manage_open_trades valt terug op candles_15m[-1][4]
                 )
                 manage_open_trades(exchange, candles_15m, curr_price=mgmt_price)
@@ -586,8 +625,8 @@ def run_bot():
                         logger.info("SL-cooldown voorbij — nieuwe setups worden weer gezocht")
 
                 if open_count == 0:
-                    if state.trade_mode == 'both':
-                        # Daytrade heeft prioriteit op nieuwe 15m candle
+                    if multi_tf:
+                        # 15m (daytrade) heeft prioriteit op een nieuwe 15m candle
                         if new_15m:
                             signal = analyze(
                                 candles_15m, candles_1h,
@@ -599,12 +638,12 @@ def run_bot():
                             )
                             if signal:
                                 effective_mode = 'daytrade'
-                        # Scalp als geen daytrade signal en er is een nieuwe 5m candle
+                        # 5m fallback: als 15m niets oplevert, ook lagere timeframe doorzoeken
                         if not signal and new_5m:
                             signal = analyze(
                                 candles_5m, candles_15m,
                                 cooldown_candles=state.sl_cooldown_candles,
-                                candles_4h=None,
+                                candles_4h=candles_4h,
                                 candles_5m=None,
                                 disabled_setups=list(set(state.disabled_setups) | {'rotation', 'continuation'}),
                                 session_filter=False,
@@ -612,24 +651,17 @@ def run_bot():
                             )
                             if signal:
                                 effective_mode = 'scalp'
-                    elif state.trade_mode == 'scalp':
+                    else:
+                        # Pure scalp mode: 4h blijft de leidende voorkeursrichting (punt 5),
+                        # geen 1h-eis — 15m geeft hier de hogere context voor het 5m-signaal
                         signal = analyze(
                             candles_5m, candles_15m,
                             cooldown_candles=state.sl_cooldown_candles,
-                            candles_4h=None,
+                            candles_4h=candles_4h,
                             candles_5m=None,
                             disabled_setups=list(set(state.disabled_setups) | {'rotation', 'continuation'}),
                             session_filter=False,
                             scalp_mode=True,
-                        )
-                    else:
-                        signal = analyze(
-                            candles_15m, candles_1h,
-                            cooldown_candles=state.sl_cooldown_candles,
-                            candles_4h=candles_4h,
-                            candles_5m=candles_5m,
-                            disabled_setups=state.disabled_setups,
-                            session_filter=False,
                         )
 
                 # Signal expiry check: als entry >0.5% van huidige prijs afwijkt, verwerp
@@ -651,9 +683,12 @@ def run_bot():
                     atr50 = calc_atr(candles_15m, min(50, len(candles_15m)))
                     vol_scale = max(0.5, min(2.0, atr50 / atr14)) if atr14 > 0 else 1.0
 
+                    # Counter-trend setups: halve risico per trade (punt 4 — strenger regime)
+                    risk_pct = state.risk_per_trade * (0.5 if getattr(signal, 'is_counter_trend', False) else 1.0)
+
                     qty = calculate_position_size(
                         state.balance, signal.entry,
-                        signal.stop_loss, state.risk_per_trade, vol_scale
+                        signal.stop_loss, risk_pct, vol_scale
                     )
                     if qty > 0:
                         trade = place_order(exchange, state.symbol, signal, qty, candles_15m, trade_mode_override=effective_mode)

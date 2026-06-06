@@ -9,13 +9,22 @@ DoopieCash Strategy Engine
 4. CONTINUATION    — pullback naar vorige constructie (oud resistance = nieuwe support)
 
 Risk management:
-- Stop loss: net buiten het af te dekken prijsgebied (wick/level)
-- Take profits op significante levels in de grafiek:
+- Stop loss: net buiten het af te dekken prijsgebied (wick/level), met 0.1-0.2%
+  buffer voorbij het swingpunt (geen liquidity pools), minimaal 1.5× ATR(14)
+- Take profits op significante levels in de grafiek (mét-trend setups):
     TP1 (25%) → SL naar breakeven
     TP2 (25%) → SL naar laatste swing low/high (prijsactie)
     TP3 (25%) → SL naar nieuw swing punt dichter bij prijs
     25% blijft open als "runner" → SL blijft meeschuiven met marktstructuur
-- Trend filter: higher highs & higher lows op 1h
+- Trend filter: higher highs & higher lows op 1h, 4h is leidende voorkeursrichting
+
+Counter-trend regime (4h is voorkeur, geen harde blokkade):
+- Setups tegen de 4h trend in zijn toegestaan onder strengere voorwaarden:
+  halve positiegrootte, max 1.5R target (TP1=1R 50%, TP2=1.5R 50% — geen TP3/runner),
+  context score ≥70 (i.p.v. ≥55 normaal), gelabeld als "counter_trend"
+
+'Gain the level': een entry is alleen geldig als de bevestigingscandle voorbij
+het relevante swingpunt SLUIT — een wick erdoorheen die terugkeert telt niet.
 """
 
 from dataclasses import dataclass, field
@@ -88,10 +97,11 @@ class Signal:
     valid_until: str = ''    # ISO timestamp; na dit tijdstip is het signaal stale
     context_score: int = 0
     context_breakdown: dict = field(default_factory=dict)
+    is_counter_trend: bool = False  # True als setup tegen de 4h voorkeursrichting ingaat
 
 # ─── Market Structure ──────────────────────────────────────────────────────────
 
-def get_swing_points(candles, lookback: int = 5):
+def get_swing_points(candles, lookback: int = 3):
     """Detecteer swing highs en lows voor marktstructuur analyse."""
     highs = [c[2] for c in candles]
     lows  = [c[3] for c in candles]
@@ -110,7 +120,7 @@ def get_market_structure(candles) -> str:
     Bepaal trend op basis van HH/HL (uptrend) of LL/LH (downtrend).
     Returnt: 'uptrend' | 'downtrend' | 'ranging'
     """
-    swing_highs, swing_lows = get_swing_points(candles, lookback=5)
+    swing_highs, swing_lows = get_swing_points(candles, lookback=3)
     if len(swing_highs) < 2 or len(swing_lows) < 2:
         return 'ranging'
 
@@ -294,8 +304,8 @@ def check_liquidity_sweep(candles, key_levels: list[Level], structure: str,
         # ── Bullish sweep: wick onder support, sluit terug erboven ────────────
         if structure in ('uptrend', 'ranging'):
             lower_wick = min(open_, close) - low
-            swept_below = low < lp * 0.9995   # wick gaat door het level
-            closed_above = close > lp          # maar sluit erboven
+            swept_below = low < lp * 0.998    # wick gaat minimaal 0.2% door het level (duidelijke sweep)
+            closed_above = close > lp          # maar sluit erboven — wint het niveau terug
             wick_significant = lower_wick > max(body * 1.5, min_wick)
             bullish_close = close > open_
 
@@ -319,8 +329,8 @@ def check_liquidity_sweep(candles, key_levels: list[Level], structure: str,
         # ── Bearish sweep: wick boven resistance, sluit terug eronder ─────────
         if structure in ('downtrend', 'ranging'):
             upper_wick = high - max(open_, close)
-            swept_above  = high > lp * 1.0005  # wick gaat door het level
-            closed_below = close < lp           # maar sluit eronder
+            swept_above  = high > lp * 1.002   # wick gaat minimaal 0.2% door het level (duidelijke sweep)
+            closed_below = close < lp           # maar sluit eronder — wint het niveau terug
             wick_significant = upper_wick > max(body * 1.5, min_wick)
             bearish_close = close < open_
 
@@ -418,7 +428,7 @@ def check_continuation(candles, key_levels: list[Level], structure: str,
 
         if (structure == 'uptrend' and level.type == 'resistance' and
                 near_level(close, lp, 0.006) and
-                close > open_ and
+                close > open_ and close > lp and    # 'wint' het niveau: sluit erboven, niet alleen wick
                 confirmation_candle(candles, 'bullish') and
                 level.strength >= 1):
             sl = low - abs(close - lp) * 0.6
@@ -439,7 +449,7 @@ def check_continuation(candles, key_levels: list[Level], structure: str,
 
         if (structure == 'downtrend' and level.type == 'support' and
                 near_level(close, lp, 0.006) and
-                close < open_ and
+                close < open_ and close < lp and    # 'wint' het niveau: sluit eronder, niet alleen wick
                 confirmation_candle(candles, 'bearish') and
                 level.strength >= 1):
             sl = high + abs(lp - close) * 0.6
@@ -462,15 +472,18 @@ def check_continuation(candles, key_levels: list[Level], structure: str,
 
 def check_rotation(candles, structure: str, candles_5m: list = None) -> Optional[Signal]:
     """
-    Rotation setup:
-    - Structuurbreuk: uptrend maakt een LL, downtrend maakt een HH
-    - Bevestiging: grote afwijzing (lange wick) OF engulfing candle
-    - Beide condities moeten aanwezig zijn
+    Rotation setup (aangescherpt — backtest PF was zwak op de oude regels):
+    - Structuurbreuk: uptrend maakt een LL die ook écht ONDER de vorige LL SLUIT
+      (downtrend analoog met HH) — een wick-only break telt niet meer mee
+    - Bevestigingscandle moet het gebroken niveau 'winnen': sluiten voorbij het
+      swingpunt, niet er slechts doorheen wikken
+    - Bevestiging: rejection candle OF engulfing
+    - Volume filter: bevestigingscandle moet > 1.5× gemiddeld volume tonen
     """
     if len(candles) < 20:
         return None
 
-    swing_highs, swing_lows = get_swing_points(candles[:-1], lookback=4)
+    swing_highs, swing_lows = get_swing_points(candles[:-1], lookback=3)
     if len(swing_highs) < 2 or len(swing_lows) < 2:
         return None
 
@@ -478,10 +491,10 @@ def check_rotation(candles, structure: str, candles_5m: list = None) -> Optional
     low   = candles[-1][3]
     high  = candles[-1][2]
 
-    last_low  = swing_lows[-1][1]
-    prev_low  = swing_lows[-2][1]
-    last_high = swing_highs[-1][1]
-    prev_high = swing_highs[-2][1]
+    last_low_idx,  last_low  = swing_lows[-1]
+    prev_low_idx,  prev_low  = swing_lows[-2]
+    last_high_idx, last_high = swing_highs[-1]
+    prev_high_idx, prev_high = swing_highs[-2]
 
     # Tijdelijke levels voor TP berekening
     key_levels_temp = (
@@ -489,12 +502,20 @@ def check_rotation(candles, structure: str, candles_5m: list = None) -> Optional
         [Level(price=p, strength=2, type='resistance') for _, p in swing_highs[-4:]]
     )
 
-    # Rotation naar bearish
-    structure_break_bear = (structure == 'uptrend' and last_low < prev_low)
+    # Bevestigingscandle moet duidelijk verhoogd volume tonen (DoopieCash: > 1.5× gemiddeld)
+    avg_vol = avg_volume(candles, 20)
+    strong_volume = avg_vol == 0 or candles[-1][5] > avg_vol * 1.5
+
+    # Rotation naar bearish: LL moet met een CLOSE onder de vorige LL bevestigd zijn
+    structure_break_bear = (
+        structure == 'uptrend' and last_low < prev_low and
+        candles[last_low_idx][4] < prev_low
+    )
     rejection_bear = (is_rejection_candle(candles[-1], 'bearish') or
                       is_engulfing(candles, 'bearish'))
+    gains_level_bear = close < last_low  # bevestigingscandle wint het gebroken niveau (sluit eronder)
 
-    if structure_break_bear and rejection_bear:
+    if structure_break_bear and rejection_bear and gains_level_bear and strong_volume:
         sl = high + abs(high - close) * 0.3
         sl_5m = _refine_sl_5m(candles_5m, 'sell')
         if sl_5m and sl_5m < sl:
@@ -504,16 +525,20 @@ def check_rotation(candles, structure: str, candles_5m: list = None) -> Optional
             return Signal(
                 setup_type='rotation', side='sell',
                 entry=close, stop_loss=sl, tp1=tp1, tp2=tp2, tp3=tp3,
-                reason="Rotation: structuurbreuk (LL) + bearish bevestiging",
+                reason="Rotation: structuurbreuk (LL met close-bevestiging) + bevestiging wint niveau",
                 confidence=0.78
             )
 
-    # Rotation naar bullish
-    structure_break_bull = (structure == 'downtrend' and last_high > prev_high)
+    # Rotation naar bullish: HH moet met een CLOSE boven de vorige HH bevestigd zijn
+    structure_break_bull = (
+        structure == 'downtrend' and last_high > prev_high and
+        candles[last_high_idx][4] > prev_high
+    )
     rejection_bull = (is_rejection_candle(candles[-1], 'bullish') or
                       is_engulfing(candles, 'bullish'))
+    gains_level_bull = close > last_high
 
-    if structure_break_bull and rejection_bull:
+    if structure_break_bull and rejection_bull and gains_level_bull and strong_volume:
         sl = low - abs(close - low) * 0.3
         sl_5m = _refine_sl_5m(candles_5m, 'buy')
         if sl_5m and sl_5m > sl:
@@ -523,7 +548,7 @@ def check_rotation(candles, structure: str, candles_5m: list = None) -> Optional
             return Signal(
                 setup_type='rotation', side='buy',
                 entry=close, stop_loss=sl, tp1=tp1, tp2=tp2, tp3=tp3,
-                reason="Rotation: structuurbreuk (HH) + bullish bevestiging",
+                reason="Rotation: structuurbreuk (HH met close-bevestiging) + bevestiging wint niveau",
                 confidence=0.78
             )
     return None
@@ -537,11 +562,38 @@ def calc_atr(candles: list, period: int = 14) -> float:
 
 # ─── Context Score ────────────────────────────────────────────────────────────
 
+def _entry_gains_level(candles: list, signal, all_levels: list) -> bool:
+    """
+    DoopieCash 'gain the level': True als de bevestigingscandle voorbij het
+    dichtstbijzijnde relevante level sluit — een wick erdoorheen telt niet,
+    de candle moet het gebied voorbij het niveau daadwerkelijk 'winnen'.
+    """
+    close = candles[-1][4]
+    entry = signal.entry
+    nearby = [l for l in all_levels if abs(l.price - entry) / entry < 0.01]
+    if not nearby:
+        return True  # geen nabijgelegen level = geen wick-afwijzing mogelijk
+    nearest = min(nearby, key=lambda l: abs(l.price - entry))
+    if signal.side == 'buy':
+        return close > nearest.price
+    else:
+        return close < nearest.price
+
+
 def calculate_context_score(candles_15m: list, candles_1h: list, candles_4h: list,
                              signal, all_levels: list, scalp_mode: bool = False) -> dict:
     """
     Score 0-100. ATR SL check is mandatory — if it fails, score=0 and setup is invalid.
     Returns dict with 'score' (int), 'valid' (bool), 'breakdown' (dict of factor->points).
+
+    Factoren (DoopieCash-gewogen — 4H-uitlijning en 'gain the level' wegen het zwaarst):
+    - ATR SL geldigheid:                15 pts (verplicht)
+    - 4H trend bevestigd + uitgelijnd:  25 pts
+    - Bevestigingscandle wint niveau:   20 pts
+    - 1H trend uitlijning:              15 pts
+    - Volume bevestiging:               10 pts
+    - Level cleanliness:                10 pts
+    - Round number nabijheid:            5 pts
     """
     breakdown = {}
     score = 0
@@ -555,16 +607,22 @@ def calculate_context_score(candles_15m: list, candles_1h: list, candles_4h: lis
     breakdown['atr_sl'] = 15
     score += 15
 
-    # ── 4H trend confirms signal direction ────────────────────────────────────
+    # ── 4H trend bevestigd EN setup is ermee uitgelijnd (DoopieCash kernregel) ─
     if candles_4h and len(candles_4h) >= 10:
         s4h = get_market_structure(candles_4h)
         if ((s4h == 'uptrend'   and signal.side == 'buy') or
             (s4h == 'downtrend' and signal.side == 'sell')):
-            breakdown['trend_4h'] = 20; score += 20
+            breakdown['trend_4h'] = 25; score += 25
         else:
             breakdown['trend_4h'] = 0
     else:
         breakdown['trend_4h'] = 0
+
+    # ── Bevestigingscandle 'wint' het niveau (close voorbij swingpunt) ─────────
+    if _entry_gains_level(candles_15m, signal, all_levels):
+        breakdown['gains_level'] = 20; score += 20
+    else:
+        breakdown['gains_level'] = 0
 
     # ── 1H trend confirms signal direction ────────────────────────────────────
     s1h = get_market_structure(candles_1h)
@@ -578,7 +636,7 @@ def calculate_context_score(candles_15m: list, candles_1h: list, candles_4h: lis
     avg_vol = avg_volume(candles_15m, 20)
     curr_vol = candles_15m[-1][5] if len(candles_15m[-1]) > 5 else 0
     if avg_vol > 0 and curr_vol >= avg_vol * 1.2:
-        breakdown['volume'] = 15; score += 15
+        breakdown['volume'] = 10; score += 10
     else:
         breakdown['volume'] = 0
 
@@ -586,9 +644,9 @@ def calculate_context_score(candles_15m: list, candles_1h: list, candles_4h: lis
     entry = signal.entry
     nearby = [l for l in all_levels if abs(l.price - entry) / entry < 0.005]
     if nearby and max(l.strength for l in nearby) <= 2:
-        breakdown['level_clean'] = 15; score += 15
+        breakdown['level_clean'] = 10; score += 10
     elif not nearby:
-        breakdown['level_clean'] = 15; score += 15  # no prior level = clean
+        breakdown['level_clean'] = 10; score += 10  # no prior level = clean
     else:
         breakdown['level_clean'] = 0
 
@@ -597,26 +655,14 @@ def calculate_context_score(candles_15m: list, candles_1h: list, candles_4h: lis
     rounded_500 = round(entry / 500) * 500
     dist = min(abs(entry - rounded_000), abs(entry - rounded_500)) / entry
     if dist < 0.003:
-        breakdown['round_number'] = 10; score += 10
+        breakdown['round_number'] = 5; score += 5
     else:
         breakdown['round_number'] = 0
 
-    # ── Previous candle is inside bar or doji ─────────────────────────────────
-    if len(candles_15m) >= 3:
-        prev  = candles_15m[-2]
-        pprev = candles_15m[-3]
-        p_body = abs(prev[4] - prev[1])
-        p_range = prev[2] - prev[3]
-        is_doji    = p_range > 0 and p_body / p_range < 0.15
-        is_inside  = prev[2] <= pprev[2] and prev[3] >= pprev[3]
-        if is_doji or is_inside:
-            breakdown['inside_doji'] = 10; score += 10
-        else:
-            breakdown['inside_doji'] = 0
-    else:
-        breakdown['inside_doji'] = 0
-
-    return {'score': min(score, 100), 'valid': score >= 50, 'breakdown': breakdown}
+    # 'valid' geeft alleen aan dat de verplichte ATR-SL check is gepasseerd —
+    # de daadwerkelijke score-drempel (55 normaal / 70 counter-trend) wordt
+    # in analyze() toegepast, omdat die afhangt van het type setup.
+    return {'score': min(score, 100), 'valid': True, 'breakdown': breakdown}
 
 
 # ─── Main Analyzer ────────────────────────────────────────────────────────────
@@ -632,7 +678,10 @@ def analyze(candles_15m: list, candles_1h: list, cooldown_candles: int = 0,
     Prioriteit: liquidity_sweep > rotation > breakout > continuation
 
     cooldown_candles: aantal candles sinds laatste SL — geen trades tijdens cooldown.
-    candles_4h: optioneel; als opgegeven wordt alleen getraded in de richting van de 4h trend.
+    candles_4h: optioneel; bepaalt de leidende voorkeursrichting (4h is leidend, geen
+        harde blokkade). Setups tegen de 4h trend in worden gemarkeerd als
+        counter-trend en lopen via strengere regels: halve positiegrootte, max 1.5R
+        (geen TP3/runner) en een hogere context-score eis (≥70 i.p.v. ≥55).
     session_filter: niet meer gebruikt (altijd False), bewaard voor compatibiliteit.
     scalp_mode: als True, gebruik tightere SL minimum (1.0× ATR) en vaste 1R/2R/3R TP levels.
     """
@@ -682,15 +731,6 @@ def analyze(candles_15m: list, candles_1h: list, cooldown_candles: int = 0,
     )
 
     if signal:
-        # 4h macro-bias filter: verwerp signals die tegen de 4h trend ingaan
-        if structure_4h and structure_4h != 'ranging':
-            if structure_4h == 'uptrend' and signal.side == 'sell':
-                logger.info(f"Signal afgewezen: {signal.setup_type} SHORT tegen 4h uptrend")
-                return None
-            if structure_4h == 'downtrend' and signal.side == 'buy':
-                logger.info(f"Signal afgewezen: {signal.setup_type} LONG tegen 4h downtrend")
-                return None
-
         atr = calc_atr(candles_15m, 14)
 
         # SL minimaal 1.5× ATR van entry (1.0× in scalp mode)
@@ -704,37 +744,67 @@ def analyze(candles_15m: list, candles_1h: list, cooldown_candles: int = 0,
                 else signal.entry + min_sl_dist
             )
 
-        # TP volgorde afdwingen: long → oplopend, short → aflopend
-        tps = sorted([signal.tp1, signal.tp2, signal.tp3])
-        if signal.side == 'buy':
-            signal.tp1, signal.tp2, signal.tp3 = tps[0], tps[1], tps[2]
-        else:
-            signal.tp1, signal.tp2, signal.tp3 = tps[2], tps[1], tps[0]
+        # 4h is de leidende voorkeursrichting (niet een harde blokkade): setups
+        # tégen de 4h trend zijn toegestaan maar lopen via een strenger
+        # counter-trend regime — halve positiegrootte, max 1.5R (geen TP3/runner)
+        # en een hogere context-score eis (≥70 i.p.v. ≥55).
+        is_counter_trend = False
+        if structure_4h and structure_4h != 'ranging':
+            if ((structure_4h == 'uptrend'   and signal.side == 'sell') or
+                (structure_4h == 'downtrend' and signal.side == 'buy')):
+                is_counter_trend = True
+                logger.info(
+                    f"{mode_label} {signal.setup_type} {signal.side.upper()} is COUNTER-TREND "
+                    f"(4h={structure_4h}) — strengere regels van toepassing"
+                )
+        signal.is_counter_trend = is_counter_trend
 
-        # R:R valideren op tp3 (na SL-correctie)
-        risk   = abs(signal.entry - signal.stop_loss)
-        reward = abs(signal.tp3 - signal.entry)
-        rr = reward / risk if risk > 0 else 0
-        if rr < 2.5:
-            logger.info(f"Signal afgewezen: R:R te laag ({rr:.1f})")
-            return None
+        risk = abs(signal.entry - signal.stop_loss)
 
-        # Scalp mode: override TPs naar vaste R multiples
-        if scalp_mode:
-            risk = abs(signal.entry - signal.stop_loss)
+        if is_counter_trend:
+            # Counter-trend: max 1.5R, geen TP3/runner — sneller winst nemen tegen de hoofdtrend in
             if signal.side == 'buy':
-                signal.tp1 = signal.entry + risk
-                signal.tp2 = signal.entry + risk * 2
-                signal.tp3 = signal.entry + risk * 3
+                signal.tp1 = signal.entry + risk * 1.0
+                signal.tp2 = signal.entry + risk * 1.5
             else:
-                signal.tp1 = signal.entry - risk
-                signal.tp2 = signal.entry - risk * 2
-                signal.tp3 = signal.entry - risk * 3
+                signal.tp1 = signal.entry - risk * 1.0
+                signal.tp2 = signal.entry - risk * 1.5
+            signal.tp3 = signal.tp2
+            rr = 1.5
+        else:
+            # TP volgorde afdwingen: long → oplopend, short → aflopend
+            tps = sorted([signal.tp1, signal.tp2, signal.tp3])
+            if signal.side == 'buy':
+                signal.tp1, signal.tp2, signal.tp3 = tps[0], tps[1], tps[2]
+            else:
+                signal.tp1, signal.tp2, signal.tp3 = tps[2], tps[1], tps[0]
 
-        # Context score
+            # R:R valideren op tp3 (na SL-correctie) — alleen voor trades mét de 4h trend
+            reward = abs(signal.tp3 - signal.entry)
+            rr = reward / risk if risk > 0 else 0
+            if rr < 2.5:
+                logger.info(f"Signal afgewezen: R:R te laag ({rr:.1f})")
+                return None
+
+            # Scalp mode: override TPs naar vaste R multiples
+            if scalp_mode:
+                if signal.side == 'buy':
+                    signal.tp1 = signal.entry + risk
+                    signal.tp2 = signal.entry + risk * 2
+                    signal.tp3 = signal.entry + risk * 3
+                else:
+                    signal.tp1 = signal.entry - risk
+                    signal.tp2 = signal.entry - risk * 2
+                    signal.tp3 = signal.entry - risk * 3
+
+        # Context score — counter-trend trades hebben een hogere drempel nodig
         ctx = calculate_context_score(candles_15m, candles_1h, candles_4h or [], signal, all_levels, scalp_mode=scalp_mode)
-        if not ctx['valid']:
-            logger.info(f"Signal afgewezen: context score te laag ({ctx['score']}/100)")
+        min_score = 70 if is_counter_trend else 55
+        if ctx['score'] < min_score:
+            logger.info(
+                f"Signal afgewezen: context score te laag ({ctx['score']}/{min_score} vereist"
+                f"{' — counter-trend' if is_counter_trend else ''})"
+            )
             return None
         signal.context_score = ctx['score']
         signal.context_breakdown = ctx['breakdown']
@@ -745,10 +815,11 @@ def analyze(candles_15m: list, candles_1h: list, cooldown_candles: int = 0,
         from datetime import timedelta
         signal.valid_until = (now + timedelta(minutes=30)).strftime('%Y-%m-%dT%H:%M:%SZ')
 
+        ct_label = " [COUNTER-TREND]" if is_counter_trend else ""
         logger.info(
-            f"{mode_label} Signal: {signal.setup_type.upper()} {signal.side.upper()} | "
+            f"{mode_label}{ct_label} Signal: {signal.setup_type.upper()} {signal.side.upper()} | "
             f"{signal.reason} | R:R={rr:.1f} | sessie={session_name} | "
-            f"score={ctx['score']}/100 | geldig tot {signal.valid_until}"
+            f"score={ctx['score']}/{min_score} | geldig tot {signal.valid_until}"
         )
 
     return signal
