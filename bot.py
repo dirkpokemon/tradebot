@@ -65,7 +65,7 @@ class BotState:
     last_live_check: float = 0.0
     # Setup gezondheid: setups die tijdelijk uitgeschakeld zijn
     disabled_setups: list = field(default_factory=list)  # ['rotation', 'continuation', ...]
-    sl_cooldown_candles: int = 0  # candles seit laatste SL; 1-4 = cooldown actief, 0 = vrij
+    sl_cooldown_candles: int = 0  # candles sinds laatste SL; 1 = cooldown actief, 0 = vrij
     trade_mode: str = "daytrade"   # "daytrade" | "scalp" | "both"
     last_5m_ts: str = ""           # alleen gebruikt in 'both' mode
 
@@ -336,7 +336,7 @@ def manage_open_trades(exchange, candles_15m, curr_price: float = None):
 
             _record_equity()
             state.consecutive_stops += 1
-            state.sl_cooldown_candles = 1  # start 5-candle cooldown (75 min op 15m)
+            state.sl_cooldown_candles = 1  # start 2-candle cooldown (30 min op 15m)
             send_telegram(
                 f"❌ <b>SL HIT</b>\n"
                 f"{trade.setup_type.upper()} {trade.side.upper()} {trade.symbol}\n"
@@ -620,7 +620,7 @@ def run_bot():
                 # SL-cooldown bijhouden: tel elke nieuwe 15m candle op
                 if new_15m and state.sl_cooldown_candles > 0:
                     state.sl_cooldown_candles += 1
-                    if state.sl_cooldown_candles >= 5:
+                    if state.sl_cooldown_candles >= 2:
                         state.sl_cooldown_candles = 0  # cooldown voorbij
                         logger.info("SL-cooldown voorbij — nieuwe setups worden weer gezocht")
 
