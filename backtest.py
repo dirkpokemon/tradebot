@@ -37,6 +37,7 @@ class BacktestConfig:
     risk_per_trade: float = 0.01
     starting_balance: float = 10000.0
     session_filter: bool = True    # London/NY filter aan/uit
+    trade_mode: str = 'daytrade'   # 'daytrade' | 'scalp' | 'both' — welke timeframe-modus simuleren
 
 @dataclass
 class BtTrade:
@@ -58,6 +59,7 @@ class BtTrade:
     tp2_hit: bool    = False
     tp3_hit: bool    = False
     counter_trend: bool = False  # True = setup ging tegen de 4h voorkeursrichting in (max 1.5R, geen TP3/runner)
+    trade_mode: str = 'daytrade'  # 'daytrade' (15m trigger) of 'scalp' (5m trigger)
 
 @dataclass
 class BacktestResult:
@@ -75,6 +77,7 @@ class BacktestResult:
     trades: list             = field(default_factory=list)
     setup_stats: dict        = field(default_factory=dict)
     counter_trend_stats: dict = field(default_factory=dict)
+    mode_stats: dict         = field(default_factory=dict)
     train_period: str        = ""
     test_period: str         = ""
     duration_s: float        = 0.0
@@ -451,29 +454,47 @@ def run_backtest(config: BacktestConfig, exchange) -> BacktestResult:
     result  = BacktestResult(config=asdict(config))
 
     # ── Data ophalen ──────────────────────────────────────────────────────────
-    limit_15m = config.days * 96  # 96 × 15m candles per dag
-    logger.info(f"Backtest: {config.symbol} | {config.days}d | {limit_15m} candles ophalen...")
+    trade_mode = config.trade_mode if config.trade_mode in ('daytrade', 'scalp', 'both') else 'daytrade'
+    use_5m     = trade_mode in ('scalp', 'both')
     backtest_state.progress = 0.05
 
-    candles_15m = fetch_ohlcv_paginated(exchange, config.symbol, '15m', config.days)
-    if len(candles_15m) < 200:
-        raise ValueError(f"Te weinig candles ontvangen: {len(candles_15m)}")
+    if use_5m:
+        # Eén fetch op 5m — 15m/1h/4h worden hieruit geresampled zodat alle
+        # timeframes perfect uitgelijnd zijn (geen aparte 15m-fetch nodig).
+        logger.info(f"Backtest: {config.symbol} | {config.days}d | trade_mode={trade_mode} | 5m candles ophalen...")
+        candles_5m  = fetch_ohlcv_paginated(exchange, config.symbol, '5m', config.days)
+        if len(candles_5m) < 600:
+            raise ValueError(f"Te weinig 5m candles ontvangen: {len(candles_5m)}")
+        candles_15m  = resample_candles(candles_5m, 3)
+        candles_1h   = resample_candles(candles_5m, 12)
+        candles_4h   = resample_candles(candles_5m, 48)
+        exec_candles = candles_5m
+        tf_factor    = {'5m': 1, '15m': 3, '1h': 12, '4h': 48}
+        exec_label   = '5m'
+    else:
+        logger.info(f"Backtest: {config.symbol} | {config.days}d | trade_mode={trade_mode} | 15m candles ophalen...")
+        candles_15m  = fetch_ohlcv_paginated(exchange, config.symbol, '15m', config.days)
+        if len(candles_15m) < 200:
+            raise ValueError(f"Te weinig candles ontvangen: {len(candles_15m)}")
+        candles_5m   = None
+        candles_1h   = resample_candles(candles_15m, 4)
+        candles_4h   = resample_candles(candles_15m, 16)
+        exec_candles = candles_15m
+        tf_factor    = {'15m': 1, '1h': 4, '4h': 16}
+        exec_label   = '15m'
 
-    candles_1h = resample_candles(candles_15m, 4)
-    candles_4h = resample_candles(candles_15m, 16)
-
-    # ── Train / test split ────────────────────────────────────────────────────
-    n_total    = len(candles_15m)
-    n_test     = max(100, int(n_total * config.test_pct))
-    n_train    = n_total - n_test
-    test_candles = candles_15m[n_train:]
+    # ── Train / test split (op de uitvoerings-timeframe) ──────────────────────
+    n_total      = len(exec_candles)
+    n_test       = max(100, int(n_total * config.test_pct))
+    n_train      = n_total - n_test
+    test_candles = exec_candles[n_train:]
 
     def ts_to_str(ts_ms):
         return datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d')
 
-    result.train_period = f"{ts_to_str(candles_15m[0][0])} → {ts_to_str(candles_15m[n_train-1][0])}"
+    result.train_period = f"{ts_to_str(exec_candles[0][0])} → {ts_to_str(exec_candles[n_train-1][0])}"
     result.test_period  = f"{ts_to_str(test_candles[0][0])} → {ts_to_str(test_candles[-1][0])}"
-    logger.info(f"Train: {result.train_period} | Test: {result.test_period} ({n_test} candles)")
+    logger.info(f"Train: {result.train_period} | Test: {result.test_period} ({n_test} {exec_label}-candles)")
 
     # ── Simulatie ─────────────────────────────────────────────────────────────
     balance     = config.starting_balance
@@ -483,6 +504,7 @@ def run_backtest(config: BacktestConfig, exchange) -> BacktestResult:
     trade_counter = 0
     cooldown = 0
 
+    CTX_5M  = 150
     CTX_15M = 100
     CTX_1H  = 50
     CTX_4H  = 30
@@ -492,12 +514,25 @@ def run_backtest(config: BacktestConfig, exchange) -> BacktestResult:
         global_i = n_train + i
         close    = candle[4]
 
-        # Context vensters (alleen verleden zichtbaar)
-        ctx_15m = candles_15m[max(0, global_i - CTX_15M): global_i]
-        ctx_1h  = candles_1h[max(0, (global_i // 4) - CTX_1H): global_i // 4]
-        ctx_4h  = candles_4h[max(0, (global_i // 16) - CTX_4H): global_i // 16]
+        # Context vensters per timeframe (alleen verleden zichtbaar, uitgelijnd op exec-index)
+        def _ctx(tf_candles, factor, window):
+            if tf_candles is None:
+                return []
+            idx = global_i // factor
+            return tf_candles[max(0, idx - window): idx]
 
-        # Trade management
+        ctx_5m  = _ctx(candles_5m,  tf_factor.get('5m', 1), CTX_5M)
+        ctx_15m = _ctx(candles_15m, tf_factor['15m'],       CTX_15M)
+        ctx_1h  = _ctx(candles_1h,  tf_factor['1h'],        CTX_1H)
+        ctx_4h  = _ctx(candles_4h,  tf_factor['4h'],        CTX_4H)
+
+        # Sluit deze candle ook een 15m candle af? (relevant voor 'both': daytrade
+        # heeft op zo'n moment voorrang, net als in run_bot's multi_tf-logica)
+        is_new_15m = (not use_5m) or (global_i % tf_factor['15m'] == tf_factor['15m'] - 1)
+
+        # Trade management — gebruik altijd 15m-structuur voor SL-trailing,
+        # maar de close van de uitvoerings-timeframe voor TP/SL-detectie
+        # (zelfde principe als `mgmt_price` in bot.py: scalp reageert sneller).
         if open_trade and open_trade.status == "open":
             pnl_delta = _manage_trade(open_trade, close, ctx_15m, balance)
             balance  += pnl_delta
@@ -521,16 +556,58 @@ def run_backtest(config: BacktestConfig, exchange) -> BacktestResult:
             if cooldown >= 5:
                 cooldown = 0
 
-        # Geen open trade: zoek signaal
-        if len(ctx_15m) < 30 or len(ctx_1h) < 20:
+        # Geen open trade: genoeg context?
+        if len(ctx_15m) < 30 or len(ctx_1h) < 20 or (use_5m and len(ctx_5m) < 30):
             continue
 
-        signal = analyze(
-            ctx_15m, ctx_1h,
-            cooldown_candles=cooldown,
-            candles_4h=ctx_4h if len(ctx_4h) >= 10 else None,
-            session_filter=config.session_filter,
-        )
+        signal = None
+        effective_mode = 'daytrade'
+
+        if trade_mode == 'daytrade':
+            signal = analyze(
+                ctx_15m, ctx_1h,
+                cooldown_candles=cooldown,
+                candles_4h=ctx_4h if len(ctx_4h) >= 10 else None,
+                session_filter=config.session_filter,
+            )
+        elif trade_mode == 'scalp':
+            # Pure scalp: 5m is de instap-timeframe, 15m geeft hogere context.
+            # Rotation/continuation zijn (net als in run_bot) uitgeschakeld voor scalp.
+            signal = analyze(
+                ctx_5m, ctx_15m,
+                cooldown_candles=cooldown,
+                candles_4h=ctx_4h if len(ctx_4h) >= 10 else None,
+                candles_5m=None,
+                disabled_setups=['rotation', 'continuation'],
+                session_filter=config.session_filter,
+                scalp_mode=True,
+            )
+            effective_mode = 'scalp'
+        else:
+            # 'both': 15m heeft voorrang op een nieuwe 15m-candle, anders 5m-fallback
+            # (zelfde prioriteit als multi_tf in run_bot).
+            if is_new_15m:
+                signal = analyze(
+                    ctx_15m, ctx_1h,
+                    cooldown_candles=cooldown,
+                    candles_4h=ctx_4h if len(ctx_4h) >= 10 else None,
+                    candles_5m=ctx_5m if ctx_5m else None,
+                    session_filter=config.session_filter,
+                )
+                if signal:
+                    effective_mode = 'daytrade'
+            if not signal:
+                signal = analyze(
+                    ctx_5m, ctx_15m,
+                    cooldown_candles=cooldown,
+                    candles_4h=ctx_4h if len(ctx_4h) >= 10 else None,
+                    candles_5m=None,
+                    disabled_setups=['rotation', 'continuation'],
+                    session_filter=config.session_filter,
+                    scalp_mode=True,
+                )
+                if signal:
+                    effective_mode = 'scalp'
 
         if signal:
             # Entry drift check (>0.5% stale)
@@ -558,6 +635,7 @@ def run_backtest(config: BacktestConfig, exchange) -> BacktestResult:
                 entry_idx=i,
                 quantity=qty,
                 counter_trend=signal.is_counter_trend,
+                trade_mode=effective_mode,
             )
 
     # Openstaande trade bij einde forceren sluiten op laatste close
@@ -654,6 +732,25 @@ def run_backtest(config: BacktestConfig, exchange) -> BacktestResult:
             'wins':          len(gw),
             'win_rate':      round(len(gw) / len(group) * 100, 1),
             'profit_factor': round(gp / gloss, 2) if gloss > 0 else None,
+            'avg_pnl':       round(sum(t.realized_pnl for t in group) / len(group), 2),
+        }
+
+    # Daytrade vs. scalp opsplitsing (alleen relevant bij trade_mode='both',
+    # maar wordt altijd berekend zodat het overzicht consistent blijft)
+    for label, group in (('daytrade', [t for t in closed if t.trade_mode == 'daytrade']),
+                         ('scalp',    [t for t in closed if t.trade_mode == 'scalp'])):
+        if not group:
+            result.mode_stats[label] = {'trades': 0}
+            continue
+        mw = [t for t in group if t.realized_pnl > 0]
+        ml = [t for t in group if t.realized_pnl <= 0]
+        mp = sum(t.realized_pnl for t in mw)
+        mloss = abs(sum(t.realized_pnl for t in ml))
+        result.mode_stats[label] = {
+            'trades':        len(group),
+            'wins':          len(mw),
+            'win_rate':      round(len(mw) / len(group) * 100, 1),
+            'profit_factor': round(mp / mloss, 2) if mloss > 0 else None,
             'avg_pnl':       round(sum(t.realized_pnl for t in group) / len(group), 2),
         }
 

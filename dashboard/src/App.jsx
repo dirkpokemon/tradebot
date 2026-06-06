@@ -971,7 +971,7 @@ function TradeReviewPanel({ closedTrades }) {
 // ─── Backtest Panel ───────────────────────────────────────────────────────────
 
 function BacktestPanel() {
-  const [btConfig, setBtConfig] = useState({ symbol: "BTC/USDT", days: 90, test_pct: 0.30 });
+  const [btConfig, setBtConfig] = useState({ symbol: "BTC/USDT", days: 90, test_pct: 0.30, trade_mode: "daytrade" });
   const [bt, setBt]     = useState(null);
   const [loading, setLoading] = useState(false);
 
@@ -1017,6 +1017,16 @@ function BacktestPanel() {
             onChange={e => setBtConfig({ ...btConfig, test_pct: e.target.value === "" ? "" : +e.target.value / 100 })}
             onBlur={e => setBtConfig({ ...btConfig, test_pct: Math.min(0.5, Math.max(0.1, (Number(e.target.value) || 30) / 100)) })}
             disabled={bt?.running} />
+        </label>
+        <label style={{ flex: 1, minWidth: 120 }}>
+          <div style={{ fontSize: 9, color: C.muted, marginBottom: 4, letterSpacing: 1, textTransform: "uppercase" }}>Modus</div>
+          <select value={btConfig.trade_mode}
+            onChange={e => setBtConfig({ ...btConfig, trade_mode: e.target.value })}
+            disabled={bt?.running}>
+            <option value="daytrade">Daytrade (15m)</option>
+            <option value="scalp">Scalp (5m)</option>
+            <option value="both">Beide (multi-tf)</option>
+          </select>
         </label>
         <button className="btn-primary" onClick={startBt} disabled={bt?.running || loading}
           style={{ flex: 1, minWidth: 130 }}>
@@ -1108,6 +1118,38 @@ function BacktestPanel() {
                   { key: "counter_trend", label: "⚖️ Tegen-trend" },
                 ].map(({ key, label }) => {
                   const d = r.counter_trend_stats[key];
+                  return (
+                    <div key={key} style={{ background: "#fafbfd", border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 12px" }}>
+                      <div style={{ fontSize: 9, color: C.blue, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
+                        {label}
+                      </div>
+                      {!d || d.trades === 0
+                        ? <div style={{ fontSize: 9, color: C.dim }}>geen trades</div>
+                        : <>
+                            <div style={{ fontSize: 13, fontWeight: 800, color: d.win_rate >= 50 ? C.green : C.red }}>{d.win_rate}%</div>
+                            <div style={{ fontSize: 9, color: C.muted, marginTop: 2 }}>
+                              {d.trades} trades · PF {d.profit_factor ?? "—"} · gem. {fmtSign(d.avg_pnl)}
+                            </div>
+                          </>
+                      }
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+
+          {r.config?.trade_mode === "both" && r.mode_stats && (Object.keys(r.mode_stats).length > 0) && (
+            <>
+              <div style={{ fontSize: 9, color: C.muted, letterSpacing: 1, textTransform: "uppercase", margin: "16px 0 8px" }}>
+                Daytrade vs. scalp (multi-tf)
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 8 }}>
+                {[
+                  { key: "daytrade", label: "Daytrade (15m)" },
+                  { key: "scalp",    label: "Scalp (5m)" },
+                ].map(({ key, label }) => {
+                  const d = r.mode_stats[key];
                   return (
                     <div key={key} style={{ background: "#fafbfd", border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 12px" }}>
                       <div style={{ fontSize: 9, color: C.blue, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
