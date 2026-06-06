@@ -57,6 +57,7 @@ class BtTrade:
     tp1_hit: bool    = False
     tp2_hit: bool    = False
     tp3_hit: bool    = False
+    counter_trend: bool = False  # True = setup ging tegen de 4h voorkeursrichting in (max 1.5R, geen TP3/runner)
 
 @dataclass
 class BacktestResult:
@@ -73,6 +74,7 @@ class BacktestResult:
     equity_curve: list       = field(default_factory=list)
     trades: list             = field(default_factory=list)
     setup_stats: dict        = field(default_factory=dict)
+    counter_trend_stats: dict = field(default_factory=dict)
     train_period: str        = ""
     test_period: str         = ""
     duration_s: float        = 0.0
@@ -216,6 +218,8 @@ def _manage_trade(trade: BtTrade, candle_close: float,
     Past trade in-place aan (status, tp*_hit, stop_loss, exit_price, realized_pnl).
     """
     pnl_delta = 0.0
+    is_ct = trade.counter_trend
+    tp_fraction = 0.5 if is_ct else 0.25
 
     hit_sl = (
         (trade.side == "buy"  and candle_close <= trade.stop_loss) or
@@ -229,16 +233,17 @@ def _manage_trade(trade: BtTrade, candle_close: float,
         (trade.side == "buy"  and candle_close >= trade.tp2) or
         (trade.side == "sell" and candle_close <= trade.tp2)
     )
-    hit_tp3 = trade.tp2_hit and not trade.tp3_hit and (
+    # Counter-trend trades hebben geen TP3/runner-fase (max 1.5R, volledige exit op TP2)
+    hit_tp3 = (not is_ct) and trade.tp2_hit and not trade.tp3_hit and (
         (trade.side == "buy"  and candle_close >= trade.tp3) or
         (trade.side == "sell" and candle_close <= trade.tp3)
     )
 
     if hit_sl:
         remaining = 1.0
-        if trade.tp1_hit: remaining -= 0.25
-        if trade.tp2_hit: remaining -= 0.25
-        if trade.tp3_hit: remaining -= 0.25
+        if trade.tp1_hit: remaining -= tp_fraction
+        if trade.tp2_hit: remaining -= tp_fraction
+        if not is_ct and trade.tp3_hit: remaining -= 0.25
         qty = trade.quantity * remaining
         pnl = (candle_close - trade.entry_price) * qty if trade.side == "buy" \
               else (trade.entry_price - candle_close) * qty
@@ -248,7 +253,7 @@ def _manage_trade(trade: BtTrade, candle_close: float,
         trade.status = "closed"
 
     elif hit_tp1:
-        qty = trade.quantity * 0.25
+        qty = trade.quantity * tp_fraction
         pnl = (candle_close - trade.entry_price) * qty if trade.side == "buy" \
               else (trade.entry_price - candle_close) * qty
         trade.realized_pnl += pnl
@@ -256,8 +261,20 @@ def _manage_trade(trade: BtTrade, candle_close: float,
         trade.tp1_hit = True
         trade.stop_loss = trade.entry_price  # breakeven
 
+    elif hit_tp2 and is_ct:
+        # Counter-trend: TP2 = max target (1.5R) → volledige exit
+        qty = trade.quantity * tp_fraction
+        pnl = (candle_close - trade.entry_price) * qty if trade.side == "buy" \
+              else (trade.entry_price - candle_close) * qty
+        trade.realized_pnl += pnl
+        pnl_delta = pnl
+        trade.tp2_hit = True
+        trade.tp3_hit = True
+        trade.exit_price = candle_close
+        trade.status = "closed"
+
     elif hit_tp2:
-        qty = trade.quantity * 0.25
+        qty = trade.quantity * tp_fraction
         pnl = (candle_close - trade.entry_price) * qty if trade.side == "buy" \
               else (trade.entry_price - candle_close) * qty
         trade.realized_pnl += pnl
@@ -274,7 +291,7 @@ def _manage_trade(trade: BtTrade, candle_close: float,
         trade.tp3_hit = True
         _trail_sl(trade, candles_window)
 
-    elif trade.tp3_hit:
+    elif trade.tp3_hit and not is_ct:
         _trail_sl(trade, candles_window)
 
     return pnl_delta
@@ -521,8 +538,10 @@ def run_backtest(config: BacktestConfig, exchange) -> BacktestResult:
             if drift > 0.005:
                 continue
 
+            # Counter-trend setups: halve risico per trade (DoopieCash punt 4 — strenger regime)
+            risk_pct = config.risk_per_trade * (0.5 if signal.is_counter_trend else 1.0)
             qty = _position_size(balance, signal.entry, signal.stop_loss,
-                                 config.risk_per_trade, ctx_15m)
+                                 risk_pct, ctx_15m)
             if qty <= 0:
                 continue
 
@@ -538,17 +557,18 @@ def run_backtest(config: BacktestConfig, exchange) -> BacktestResult:
                 tp3=signal.tp3,
                 entry_idx=i,
                 quantity=qty,
+                counter_trend=signal.is_counter_trend,
             )
 
     # Openstaande trade bij einde forceren sluiten op laatste close
     if open_trade and open_trade.status == "open":
         last_close = test_candles[-1][4]
-        qty = open_trade.quantity * (
-            1.0
-            - (0.25 if open_trade.tp1_hit else 0)
-            - (0.25 if open_trade.tp2_hit else 0)
-            - (0.25 if open_trade.tp3_hit else 0)
-        )
+        tp_frac = 0.5 if open_trade.counter_trend else 0.25
+        remaining = 1.0
+        if open_trade.tp1_hit: remaining -= tp_frac
+        if open_trade.tp2_hit: remaining -= tp_frac
+        if not open_trade.counter_trend and open_trade.tp3_hit: remaining -= 0.25
+        qty = open_trade.quantity * remaining
         pnl = (last_close - open_trade.entry_price) * qty if open_trade.side == "buy" \
               else (open_trade.entry_price - last_close) * qty
         open_trade.realized_pnl += pnl
@@ -617,6 +637,24 @@ def run_backtest(config: BacktestConfig, exchange) -> BacktestResult:
             'win_rate':      round(len(sw) / len(ts) * 100, 1),
             'profit_factor': round(gp / gl, 2) if gl > 0 else None,
             'avg_pnl':       round(sum(t.realized_pnl for t in ts) / len(ts), 2),
+        }
+
+    # Counter-trend vs. mét-trend opsplitsing
+    for label, group in (('counter_trend', [t for t in closed if t.counter_trend]),
+                         ('with_trend',    [t for t in closed if not t.counter_trend])):
+        if not group:
+            result.counter_trend_stats[label] = {'trades': 0}
+            continue
+        gw = [t for t in group if t.realized_pnl > 0]
+        gl = [t for t in group if t.realized_pnl <= 0]
+        gp = sum(t.realized_pnl for t in gw)
+        gloss = abs(sum(t.realized_pnl for t in gl))
+        result.counter_trend_stats[label] = {
+            'trades':        len(group),
+            'wins':          len(gw),
+            'win_rate':      round(len(gw) / len(group) * 100, 1),
+            'profit_factor': round(gp / gloss, 2) if gloss > 0 else None,
+            'avg_pnl':       round(sum(t.realized_pnl for t in group) / len(group), 2),
         }
 
     result.trades    = [asdict(t) for t in closed[-200:]]  # max 200 trades teruggeven
