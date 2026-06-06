@@ -1097,6 +1097,38 @@ function BacktestPanel() {
               </div>
             ))}
           </div>
+
+          {r.counter_trend_stats && (Object.keys(r.counter_trend_stats).length > 0) && (
+            <>
+              <div style={{ fontSize: 9, color: C.muted, letterSpacing: 1, textTransform: "uppercase", margin: "16px 0 8px" }}>
+                Met-trend vs. tegen-trend
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 8 }}>
+                {[
+                  { key: "with_trend",    label: "Mét trend" },
+                  { key: "counter_trend", label: "⚖️ Tegen-trend" },
+                ].map(({ key, label }) => {
+                  const d = r.counter_trend_stats[key];
+                  return (
+                    <div key={key} style={{ background: "#fafbfd", border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 12px" }}>
+                      <div style={{ fontSize: 9, color: C.blue, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
+                        {label}
+                      </div>
+                      {!d || d.trades === 0
+                        ? <div style={{ fontSize: 9, color: C.dim }}>geen trades</div>
+                        : <>
+                            <div style={{ fontSize: 13, fontWeight: 800, color: d.win_rate >= 50 ? C.green : C.red }}>{d.win_rate}%</div>
+                            <div style={{ fontSize: 9, color: C.muted, marginTop: 2 }}>
+                              {d.trades} trades · PF {d.profit_factor ?? "—"} · gem. {fmtSign(d.avg_pnl)}
+                            </div>
+                          </>
+                      }
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
         </>
       )}
     </div>
