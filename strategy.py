@@ -555,7 +555,7 @@ def _full_reversal_structure(swing_highs, swing_lows, direction: str) -> Optiona
             return None
         if not (hl_price > l_price and hh_price > h_price):
             return None
-        return {'pullback_level': hl_price, 'construction_idx': hh_idx}
+        return {'pullback_level': hl_price}
 
     else:  # bearish: H → L → LH → LL
         h_idx,  h_price  = swing_highs[-2]    # H  — origineel hoogste punt
@@ -566,7 +566,7 @@ def _full_reversal_structure(swing_highs, swing_lows, direction: str) -> Optiona
             return None
         if not (lh_price < h_price and ll_price < l_price):
             return None
-        return {'pullback_level': lh_price, 'construction_idx': ll_idx}
+        return {'pullback_level': lh_price}
 
 
 def check_rotation(candles, candles_5m: list = None) -> Optional[Signal]:
@@ -602,15 +602,18 @@ def check_rotation(candles, candles_5m: list = None) -> Optional[Signal]:
     avg_vol = avg_volume(candles, 20)
     strong_volume = avg_vol == 0 or candles[-1][5] > avg_vol * 1.2
 
-    last_idx = len(candles) - 1
+    # NB: get_swing_points() bevestigt een swingpunt pas na `lookback` candles —
+    # daardoor ligt de HH/LL van de constructie altijd al een aantal candles
+    # terug t.o.v. de huidige candle. Instappen kan dus per definitie niet meer
+    # op de structuurbreuk-candle zelf; de near_level(pullback)-check hieronder
+    # zorgt dat we pas instappen als prijs daadwerkelijk is teruggekeerd naar de
+    # HL/LH-zone, niet vlak na de break.
 
     # ── Bullish rotation: L → H → HL → HH compleet, entry op pullback naar HL ──
     construction = _full_reversal_structure(swing_highs, swing_lows, 'bullish')
     if construction:
         pb = construction['pullback_level']
-        # de constructie (HH) moet al gevormd zijn — niet instappen op die candle zelf
-        on_break_candle = construction['construction_idx'] >= last_idx - 1
-        if (not on_break_candle and strong_volume and
+        if (strong_volume and
                 near_level(close, pb, 0.01) and
                 close > open_ and close > pb and
                 confirmation_candle(candles, 'bullish')):
@@ -631,8 +634,7 @@ def check_rotation(candles, candles_5m: list = None) -> Optional[Signal]:
     construction = _full_reversal_structure(swing_highs, swing_lows, 'bearish')
     if construction:
         pb = construction['pullback_level']
-        on_break_candle = construction['construction_idx'] >= last_idx - 1
-        if (not on_break_candle and strong_volume and
+        if (strong_volume and
                 near_level(close, pb, 0.01) and
                 close < open_ and close < pb and
                 confirmation_candle(candles, 'bearish')):
