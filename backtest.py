@@ -700,7 +700,7 @@ def run_backtest(config: BacktestConfig, exchange) -> BacktestResult:
             result.sharpe = round(mean_r / std_r * math.sqrt(252), 2)
 
     # Per-setup breakdown
-    for setup in ['liquidity_sweep', 'rotation', 'breakout', 'continuation', 'range']:
+    for setup in ['rotation', 'continuation']:
         ts = [t for t in closed if t.setup_type == setup]
         if not ts:
             result.setup_stats[setup] = {'trades': 0}

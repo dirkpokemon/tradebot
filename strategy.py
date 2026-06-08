@@ -1,30 +1,26 @@
 """
 DoopieCash Strategy Engine
 ==========================
-4 trade setups op 15m/1h timeframe:
+2 trade setups op 15m/1h timeframe (daytrade) of 5m/15m (scalp):
 
-1. LIQUIDITY SWEEP — wick door een key level, sluit terug aan de andere kant (fake-out)
-2. ROTATION        — structuurbreuk (LL/HH) + bevestiging via afwijzing (lange wick of engulfing)
-3. BREAKOUT        — candle sluit boven/onder key level + retest van dat level
-4. CONTINUATION    — pullback naar vorige constructie (oud resistance = nieuwe support)
+1. ROTATION     — volledige constructie L→H→HL→HH (of H→L→LH→LL), entry op pullback
+2. CONTINUATION — pullback naar oud resistance/support level, minimaal 2 candles consolidatie
+
+Kernprincipes:
+- 4H is leidend: ranging/onduidelijke 4H = geen trades
+- Met 4H trend → limit-entry op het level (geen extra confirmatie nodig)
+- Tegen 4H trend → confirmatie candle verplicht (hogere score-eis + counter-trend regime)
+- 'Gain the level': close moet minimaal 0.15% voorbij het swing punt/level sluiten
+- Body filter: body van entry candle minimaal 50% van totale candle range
+- SL altijd prijsconstructie-gebaseerd: 0.15% buffer buiten het swing punt
 
 Risk management:
-- Stop loss: net buiten het af te dekken prijsgebied (wick/level), met 0.1-0.2%
-  buffer voorbij het swingpunt (geen liquidity pools), minimaal 1.5× ATR(14)
-- Take profits op significante levels in de grafiek (mét-trend setups):
-    TP1 (25%) → SL naar breakeven
-    TP2 (25%) → SL naar laatste swing low/high (prijsactie)
-    TP3 (25%) → SL naar nieuw swing punt dichter bij prijs
-    25% blijft open als "runner" → SL blijft meeschuiven met marktstructuur
-- Trend filter: higher highs & higher lows op 1h, 4h is leidende voorkeursrichting
-
-Counter-trend regime (4h is voorkeur, geen harde blokkade):
-- Setups tegen de 4h trend in zijn toegestaan onder strengere voorwaarden:
-  halve positiegrootte, max 1.5R target (TP1=1R 50%, TP2=1.5R 50% — geen TP3/runner),
-  context score ≥70 (i.p.v. ≥55 normaal), gelabeld als "counter_trend"
-
-'Gain the level': een entry is alleen geldig als de bevestigingscandle voorbij
-het relevante swingpunt SLUIT — een wick erdoorheen die terugkeert telt niet.
+- Max 1× open daytrade + 1× open scalp tegelijk (totaal max 2 posities)
+- TP1 (25%) — SL NIET automatisch naar breakeven, alleen als prijs nieuw level heeft gegained
+- TP2 (25%) → SL naar breakeven + laatste swing prijsactie
+- TP3 (25%) → SL naar nieuwer swing punt
+- Runner (25%) → SL trailend op marktstructuur
+- Counter-trend: max 1R–1.5R, geen TP3/runner, halve positie, score ≥70
 """
 
 from dataclasses import dataclass, field
@@ -83,7 +79,7 @@ class Level:
 
 @dataclass
 class Signal:
-    setup_type: str          # 'liquidity_sweep' | 'rotation' | 'breakout' | 'continuation'
+    setup_type: str          # 'rotation' | 'continuation'
     side: str                # 'buy' | 'sell'
     entry: float
     stop_loss: float
@@ -200,18 +196,21 @@ def confirmation_candle(candles, direction='bullish') -> bool:
 def near_level(price, level, tolerance=0.003) -> bool:
     return abs(price - level) / level < tolerance
 
-def gains_level(close: float, level_price: float, side: str, tolerance: float = 0.001) -> bool:
+def gains_level(close: float, level_price: float, side: str, tolerance: float = 0.0015) -> bool:
     """
-    DoopieCash 'gain the level' — versoepeld voor daytrade: een exacte
-    `close > level` (of `<`) bleek te scherp (de close hoeft het level maar met
-    een fractie te missen om de hele setup af te wijzen). Met een tolerantie van
-    0.1% telt een close die het level nét niet haalt — maar er wel duidelijk
-    naartoe sluit — ook als 'gewonnen'.
+    DoopieCash 'gain the level': close moet minimaal 0.15% voorbij het level sluiten.
+    Een wick erdoorheen telt niet — alleen de slotkoers telt.
     """
     if side == 'buy':
         return close > level_price * (1 - tolerance)
     else:
         return close < level_price * (1 + tolerance)
+
+def has_strong_body(candle, min_ratio: float = 0.5) -> bool:
+    """Body minimaal 50% van de totale candle range (filter voor zwakke/doji candles)."""
+    o, h, l, c = candle[1], candle[2], candle[3], candle[4]
+    total = h - l
+    return total > 0 and abs(c - o) / total >= min_ratio
 
 def find_tp_levels(entry: float, side: str, key_levels: list[Level], candles) -> tuple[float, float, float]:
     """
@@ -258,200 +257,6 @@ def _refine_sl_5m(candles_5m: list, side: str) -> Optional[float]:
     return None
 
 
-def _refine_sl_with_5m(candles_5m: list, level_price: float, side: str) -> Optional[float]:
-    """
-    Zoek in de laatste 3 5m-candles de sweep-candle die het 15m-signaal veroorzaakte.
-    Geeft de tightere 5m-SL terug als die gevonden wordt, anders None.
-    Een 15m-candle = 3 5m-candles; dezelfde wick zit daarin maar compacter.
-    """
-    if not candles_5m or len(candles_5m) < 3:
-        return None
-    for candle in reversed(candles_5m[-3:]):
-        open_, high, low, close = candle[1], candle[2], candle[3], candle[4]
-        body = abs(close - open_)
-        if body == 0:
-            continue
-        if side == 'buy':
-            lower_wick = min(open_, close) - low
-            if (low < level_price * 0.9998 and close > level_price and
-                    lower_wick > body * 1.2 and close > open_):
-                return low * 0.9990  # tighter dan 15m SL
-        else:
-            upper_wick = high - max(open_, close)
-            if (high > level_price * 1.0002 and close < level_price and
-                    upper_wick > body * 1.2 and close < open_):
-                return high * 1.0010
-    return None
-
-
-def check_liquidity_sweep(candles, key_levels: list[Level], structure: str,
-                           candles_5m: list = None) -> Optional[Signal]:
-    """
-    Liquidity Sweep setup:
-    - Wick steekt voorbij een key level (jaagt stops na)
-    - Candle sluit terug aan de andere kant van het level (fake-out bevestigd)
-    - Wick is minimaal 1.5× de body
-    - SL net voorbij de sweepwick, entry op close
-    - candles_5m: optioneel — als opgegeven wordt SL verfijnd op 5m wick (tighter = betere R:R)
-
-    Verschil met breakout: bij breakout verwacht je dat prijs doorloopt.
-    Bij een sweep verwacht je dat prijs keert — de doorbraak was een val.
-    """
-    if len(candles) < 10:
-        return None
-
-    curr  = candles[-1]
-    open_ = curr[1]
-    high  = curr[2]
-    low   = curr[3]
-    close = curr[4]
-    body  = abs(close - open_)
-    total_range = high - low
-    atr   = calc_atr(candles, 14)
-
-    # Minimale wickgrootte: 0.5× ATR zodat kleine wicks worden genegeerd
-    min_wick = atr * 0.5
-
-    # DoopieCash-versterking (later versoepeld — 0.6 leverde 0 sweep-trades op
-    # in backtest): reversal candle moet een redelijke body tonen (≥45% van de
-    # totale candle range) — zwakke bodies wijzen op besluiteloosheid
-    strong_body = total_range > 0 and body / total_range >= 0.45
-
-    # Volume op de reversal candle moet verhoogd zijn (>1.2× gemiddeld van de
-    # laatste 20 candles — was 1.3×, iets versoepeld zodat sweeps weer signaleren)
-    avg_vol = avg_volume(candles, 20)
-    strong_volume = avg_vol == 0 or curr[5] > avg_vol * 1.2
-
-    for level in sorted(key_levels, key=lambda l: -l.strength):
-        # Level moet 'schoon' zijn — max 4 eerdere touches (was 3; te streng
-        # gaf 0 sweep-trades), anders is de liquiditeit te opgedroogd
-        if level.strength > 4:
-            continue
-        lp = level.price
-
-        # ── Bullish sweep: wick onder support, sluit terug erboven ────────────
-        if structure in ('uptrend', 'ranging'):
-            lower_wick = min(open_, close) - low
-            swept_below = low < lp * 0.9985    # wick gaat minimaal 0.15% door het level (was 0.3% — te streng)
-            closed_above = close > lp          # maar sluit erboven — wint het niveau terug
-            wick_significant = lower_wick > max(body * 1.5, min_wick)
-            bullish_close = close > open_
-
-            if (swept_below and closed_above and wick_significant and bullish_close
-                    and strong_body and strong_volume):
-                sl = low * 0.9985
-                # Probeer tightere 5m SL — verbetert R:R zonder signal te verwerpen
-                sl_5m = _refine_sl_with_5m(candles_5m, lp, 'buy')
-                if sl_5m and sl_5m > sl:  # alleen gebruiken als het tighter is
-                    sl = sl_5m
-                if close - sl < atr * 0.3:
-                    continue
-                tp1, tp2, tp3 = find_tp_levels(close, 'buy', key_levels, candles)
-                refined = "5m" if sl_5m else "15m"
-                return Signal(
-                    setup_type='liquidity_sweep', side='buy',
-                    entry=close, stop_loss=sl, tp1=tp1, tp2=tp2, tp3=tp3,
-                    reason=f"Bullish sweep onder {lp:.0f} (wick {lower_wick:.0f}, body {body/total_range*100:.0f}%, SL={refined}, strength={level.strength})",
-                    confidence=min(0.76 + level.strength * 0.04 + (0.05 if sl_5m else 0), 0.95),
-                )
-
-        # ── Bearish sweep: wick boven resistance, sluit terug eronder ─────────
-        if structure in ('downtrend', 'ranging'):
-            upper_wick = high - max(open_, close)
-            swept_above  = high > lp * 1.0015  # wick gaat minimaal 0.15% door het level (was 0.3% — te streng)
-            closed_below = close < lp           # maar sluit eronder — wint het niveau terug
-            wick_significant = upper_wick > max(body * 1.5, min_wick)
-            bearish_close = close < open_
-
-            if (swept_above and closed_below and wick_significant and bearish_close
-                    and strong_body and strong_volume):
-                sl = high * 1.0015
-                sl_5m = _refine_sl_with_5m(candles_5m, lp, 'sell')
-                if sl_5m and sl_5m < sl:  # alleen gebruiken als het tighter is
-                    sl = sl_5m
-                if sl - close < atr * 0.3:
-                    continue
-                tp1, tp2, tp3 = find_tp_levels(close, 'sell', key_levels, candles)
-                refined = "5m" if sl_5m else "15m"
-                return Signal(
-                    setup_type='liquidity_sweep', side='sell',
-                    entry=close, stop_loss=sl, tp1=tp1, tp2=tp2, tp3=tp3,
-                    reason=f"Bearish sweep boven {lp:.0f} (wick {upper_wick:.0f}, body {body/total_range*100:.0f}%, SL={refined}, strength={level.strength})",
-                    confidence=min(0.76 + level.strength * 0.04 + (0.05 if sl_5m else 0), 0.95),
-                )
-
-    return None
-
-
-def check_breakout(candles, key_levels: list[Level], structure: str,
-                   structure_4h: str = None, candles_5m: list = None) -> Optional[Signal]:
-    """
-    Breakout setup (DoopieCash — gerepareerd):
-    - NIET instappen op de breakout-candle zelf
-    - Wacht op een retest van het gebroken level (binnen 5 candles, anders vervalt de setup)
-    - Op de retest moet de candle het gebroken level opnieuw 'winnen': bullish
-      retest sluit boven het level, bearish retest sluit eronder
-    - Alleen in de richting van de 4h trend — geen counter-trend breakouts
-    """
-    if len(candles) < 15:
-        return None
-
-    curr  = candles[-1]
-    open_ = curr[1]
-    high  = curr[2]
-    low   = curr[3]
-    close = curr[4]
-
-    # Hoeveel candles geleden was de breakout-candle? Max 5, en niet de huidige.
-    def _recent_breakout_offset(level_price, side):
-        for j in range(2, min(7, len(candles))):
-            bc, bc_prev = candles[-j], candles[-j-1]
-            if side == 'buy' and bc_prev[4] < level_price and bc[4] > level_price * 1.002:
-                return j - 1   # aantal candles tussen breakout en nu
-            if side == 'sell' and bc_prev[4] > level_price and bc[4] < level_price * 0.998:
-                return j - 1
-        return None
-
-    for level in key_levels:
-        lp = level.price
-
-        # ── Bullish breakout + retest ─────────────────────────────────────────
-        if structure in ('uptrend', 'ranging') and structure_4h != 'downtrend':
-            offset = _recent_breakout_offset(lp, 'buy')
-            if offset and offset <= 5:
-                # Retest: prijs komt terug naar het level én wint het opnieuw (close erboven)
-                if (near_level(low, lp, 0.008) and gains_level(close, lp, 'buy') and close > open_ and
-                        confirmation_candle(candles, 'bullish')):
-                    sl = low - (close - low) * 0.3
-                    sl_5m = _refine_sl_5m(candles_5m, 'buy')
-                    if sl_5m and sl_5m > sl:
-                        sl = sl_5m
-                    tp1, tp2, tp3 = find_tp_levels(close, 'buy', key_levels, candles)
-                    return Signal(
-                        setup_type='breakout', side='buy',
-                        entry=close, stop_loss=sl, tp1=tp1, tp2=tp2, tp3=tp3,
-                        reason=f"Bullish breakout van {lp:.0f}, retest na {offset} candle(s) wint het niveau terug",
-                        confidence=0.75 + min(level.strength * 0.05, 0.2)
-                    )
-
-        # ── Bearish breakout + retest ─────────────────────────────────────────
-        if structure in ('downtrend', 'ranging') and structure_4h != 'uptrend':
-            offset = _recent_breakout_offset(lp, 'sell')
-            if offset and offset <= 5:
-                if (near_level(high, lp, 0.008) and gains_level(close, lp, 'sell') and close < open_ and
-                        confirmation_candle(candles, 'bearish')):
-                    sl = high + (high - close) * 0.3
-                    sl_5m = _refine_sl_5m(candles_5m, 'sell')
-                    if sl_5m and sl_5m < sl:
-                        sl = sl_5m
-                    tp1, tp2, tp3 = find_tp_levels(close, 'sell', key_levels, candles)
-                    return Signal(
-                        setup_type='breakout', side='sell',
-                        entry=close, stop_loss=sl, tp1=tp1, tp2=tp2, tp3=tp3,
-                        reason=f"Bearish breakout van {lp:.0f}, retest na {offset} candle(s) wint het niveau terug",
-                        confidence=0.75 + min(level.strength * 0.05, 0.2)
-                    )
-    return None
 
 
 def _pullback_consolidation(candles, level_price: float, min_candles: int = 2,
@@ -481,18 +286,16 @@ def _pullback_consolidation(candles, level_price: float, min_candles: int = 2,
 def check_continuation(candles, key_levels: list[Level], structure: str,
                        structure_4h: str = None, candles_5m: list = None) -> Optional[Signal]:
     """
-    Continuation setup (DoopieCash — gerepareerd):
-    - Trend is duidelijk (uptrend of downtrend) op zowel 4h als 1h — beide
-      moeten daadwerkelijk trenden, niet ranging zijn
-    - Pullback stopt op een interessant level (oud resistance = nieuwe support
-      of andersom) en consolideert daar minimaal 2 candles (inside bars / kleine bodies)
-      — was 3, maar dat bleek te streng en hield daytrade-frequentie te laag
-    - Entry-candle moet de trendrichting 'gainen' met zijn close
+    Continuation setup:
+    - Prijs in duidelijke trend, pullback naar oud resistance/support level
+    - Minimaal 2 candles consolidatie op het level (inside bars / kleine bodies)
+    - Body filter: entry candle body ≥50% van totale range
+    - Gain filter: close ≥0.15% voorbij het level
+    - Met 4H trend → geen extra confirmatie candle nodig
+    - Tegen 4H trend → confirmatie candle verplicht
+    - SL: 0.15% buiten het meest recente swing punt (low/high van de entry candle)
     """
     if structure not in ('uptrend', 'downtrend'):
-        return None
-    # Beide 4h én 1h moeten in dezelfde richting trenden — geen ranging hogere timeframe
-    if structure_4h is not None and structure_4h != structure:
         return None
 
     close = candles[-1][4]
@@ -503,13 +306,20 @@ def check_continuation(candles, key_levels: list[Level], structure: str,
     for level in key_levels:
         lp = level.price
 
+        # ── Bullish continuation: uptrend, pullback naar oud resistance = nieuw support ──
         if (structure == 'uptrend' and level.type == 'resistance' and
                 near_level(close, lp, 0.006) and
                 _pullback_consolidation(candles, lp) and
-                close > open_ and gains_level(close, lp, 'buy') and    # 'wint' het niveau (met 0.1% tolerantie)
-                confirmation_candle(candles, 'bullish') and
+                close > open_ and
+                has_strong_body(candles[-1]) and
+                gains_level(close, lp, 'buy') and
                 level.strength >= 1):
-            sl = low - abs(close - lp) * 0.6
+
+            with_trend = (structure_4h == 'uptrend' or structure_4h is None)
+            if not with_trend and not confirmation_candle(candles, 'bullish'):
+                continue
+
+            sl = low * 0.9985
             sl_5m = _refine_sl_5m(candles_5m, 'buy')
             if sl_5m and sl_5m > sl:
                 sl = sl_5m
@@ -518,20 +328,28 @@ def check_continuation(candles, key_levels: list[Level], structure: str,
             tp1, tp2, tp3 = find_tp_levels(close, 'buy', key_levels, candles)
             if tp2 - close < (close - sl) * 2:
                 continue
+            trend_tag = "met 4H trend" if with_trend else "COUNTER-TREND"
             return Signal(
                 setup_type='continuation', side='buy',
                 entry=close, stop_loss=sl, tp1=tp1, tp2=tp2, tp3=tp3,
-                reason=f"Continuation long: pullback + consolidatie bij {lp:.0f} (oud resistance)",
+                reason=f"Continuation long ({trend_tag}): pullback + consolidatie bij {lp:.0f}",
                 confidence=0.74
             )
 
+        # ── Bearish continuation: downtrend, pullback naar oud support = nieuw resistance ──
         if (structure == 'downtrend' and level.type == 'support' and
                 near_level(close, lp, 0.006) and
                 _pullback_consolidation(candles, lp) and
-                close < open_ and gains_level(close, lp, 'sell') and    # 'wint' het niveau (met 0.1% tolerantie)
-                confirmation_candle(candles, 'bearish') and
+                close < open_ and
+                has_strong_body(candles[-1]) and
+                gains_level(close, lp, 'sell') and
                 level.strength >= 1):
-            sl = high + abs(lp - close) * 0.6
+
+            with_trend = (structure_4h == 'downtrend' or structure_4h is None)
+            if not with_trend and not confirmation_candle(candles, 'bearish'):
+                continue
+
+            sl = high * 1.0015
             sl_5m = _refine_sl_5m(candles_5m, 'sell')
             if sl_5m and sl_5m < sl:
                 sl = sl_5m
@@ -540,10 +358,11 @@ def check_continuation(candles, key_levels: list[Level], structure: str,
             tp1, tp2, tp3 = find_tp_levels(close, 'sell', key_levels, candles)
             if close - tp2 < (sl - close) * 2:
                 continue
+            trend_tag = "met 4H trend" if with_trend else "COUNTER-TREND"
             return Signal(
                 setup_type='continuation', side='sell',
                 entry=close, stop_loss=sl, tp1=tp1, tp2=tp2, tp3=tp3,
-                reason=f"Continuation short: pullback + consolidatie bij {lp:.0f} (oud support)",
+                reason=f"Continuation short ({trend_tag}): pullback + consolidatie bij {lp:.0f}",
                 confidence=0.74
             )
     return None
@@ -584,17 +403,16 @@ def _full_reversal_structure(swing_highs, swing_lows, direction: str) -> Optiona
         return {'pullback_level': lh_price}
 
 
-def check_rotation(candles, candles_5m: list = None) -> Optional[Signal]:
+def check_rotation(candles, structure_4h: str = None, candles_5m: list = None) -> Optional[Signal]:
     """
-    Rotation setup (DoopieCash — verder aangescherpt):
-    - Pas geldig als de markt een VOLLEDIGE nieuwe constructie van 4 afwisselende
-      swingpunten heeft gevormd: L→H→HL→HH (bullish) of H→L→LH→LL (bearish) —
-      een kale structuurbreuk is niet meer genoeg
-    - NIET instappen op de structuurbreuk-candle zelf: wachten op een pullback
-      naar een interessant prijsgebied (het HL/LH-punt van de constructie)
-    - Entry op de eerste candle die de nieuwe richting bevestigt na de pullback —
-      de close moet het pullback-level 'winnen' (gainen, geen wick-only)
-    - Volume filter: bevestigingscandle moet > 1.2× gemiddeld volume tonen
+    Rotation setup:
+    - Volledige constructie vereist: L→H→HL→HH (bullish) of H→L→LH→LL (bearish)
+    - Na HH/LL: wacht op pullback naar het HL/LH-punt (vervalt na 10 candles)
+    - Body filter: entry candle body ≥50% van totale range
+    - Gain filter: close ≥0.15% voorbij het pullback-level
+    - Met 4H trend → geen extra confirmatie candle nodig (limit-stijl entry op het level)
+    - Tegen 4H trend → confirmatie candle verplicht (rejection of engulfing)
+    - SL: 0.15% buiten het meest recente swing punt
     """
     if len(candles) < 25:
         return None
@@ -607,8 +425,8 @@ def check_rotation(candles, candles_5m: list = None) -> Optional[Signal]:
     open_ = candles[-1][1]
     low   = candles[-1][3]
     high  = candles[-1][2]
+    n_prev = len(candles[:-1]) - 1  # index van de laatste confirmed candle in candles[:-1]
 
-    # Tijdelijke levels voor TP berekening
     key_levels_temp = (
         [Level(price=p, strength=2, type='support')    for _, p in swing_lows[-4:]] +
         [Level(price=p, strength=2, type='resistance') for _, p in swing_highs[-4:]]
@@ -617,54 +435,61 @@ def check_rotation(candles, candles_5m: list = None) -> Optional[Signal]:
     avg_vol = avg_volume(candles, 20)
     strong_volume = avg_vol == 0 or candles[-1][5] > avg_vol * 1.2
 
-    # NB: get_swing_points() bevestigt een swingpunt pas na `lookback` candles —
-    # daardoor ligt de HH/LL van de constructie altijd al een aantal candles
-    # terug t.o.v. de huidige candle. Instappen kan dus per definitie niet meer
-    # op de structuurbreuk-candle zelf; de near_level(pullback)-check hieronder
-    # zorgt dat we pas instappen als prijs daadwerkelijk is teruggekeerd naar de
-    # HL/LH-zone, niet vlak na de break.
-
     # ── Bullish rotation: L → H → HL → HH compleet, entry op pullback naar HL ──
     construction = _full_reversal_structure(swing_highs, swing_lows, 'bullish')
     if construction:
-        pb = construction['pullback_level']
-        if (strong_volume and
-                near_level(close, pb, 0.01) and
-                close > open_ and gains_level(close, pb, 'buy') and
-                confirmation_candle(candles, 'bullish')):
-            sl = low - abs(close - pb) * 0.3
-            sl_5m = _refine_sl_5m(candles_5m, 'buy')
-            if sl_5m and sl_5m > sl:
-                sl = sl_5m
-            if close - sl > 0:
-                tp1, tp2, tp3 = find_tp_levels(close, 'buy', key_levels_temp, candles)
-                return Signal(
-                    setup_type='rotation', side='buy',
-                    entry=close, stop_loss=sl, tp1=tp1, tp2=tp2, tp3=tp3,
-                    reason=f"Rotation bullish: volledige omslag L→H→HL→HH bevestigd, entry op pullback naar {pb:.0f}",
-                    confidence=0.78
-                )
+        hh_age = n_prev - swing_highs[-1][0]  # candles geleden dat HH bevestigd werd
+        if hh_age <= 10:
+            pb = construction['pullback_level']
+            with_trend = (structure_4h == 'uptrend' or structure_4h is None)
+            confirm_ok = confirmation_candle(candles, 'bullish') if not with_trend else True
+            if (strong_volume and
+                    near_level(close, pb, 0.01) and
+                    close > open_ and
+                    has_strong_body(candles[-1]) and
+                    gains_level(close, pb, 'buy') and
+                    confirm_ok):
+                sl = low * 0.9985
+                sl_5m = _refine_sl_5m(candles_5m, 'buy')
+                if sl_5m and sl_5m > sl:
+                    sl = sl_5m
+                if close - sl > 0:
+                    tp1, tp2, tp3 = find_tp_levels(close, 'buy', key_levels_temp, candles)
+                    trend_tag = "met 4H trend" if with_trend else "COUNTER-TREND"
+                    return Signal(
+                        setup_type='rotation', side='buy',
+                        entry=close, stop_loss=sl, tp1=tp1, tp2=tp2, tp3=tp3,
+                        reason=f"Rotation bullish ({trend_tag}): L→H→HL→HH, pullback {pb:.0f}, HH {hh_age}c geleden",
+                        confidence=0.78
+                    )
 
     # ── Bearish rotation: H → L → LH → LL compleet, entry op pullback naar LH ──
     construction = _full_reversal_structure(swing_highs, swing_lows, 'bearish')
     if construction:
-        pb = construction['pullback_level']
-        if (strong_volume and
-                near_level(close, pb, 0.01) and
-                close < open_ and gains_level(close, pb, 'sell') and
-                confirmation_candle(candles, 'bearish')):
-            sl = high + abs(pb - close) * 0.3
-            sl_5m = _refine_sl_5m(candles_5m, 'sell')
-            if sl_5m and sl_5m < sl:
-                sl = sl_5m
-            if sl - close > 0:
-                tp1, tp2, tp3 = find_tp_levels(close, 'sell', key_levels_temp, candles)
-                return Signal(
-                    setup_type='rotation', side='sell',
-                    entry=close, stop_loss=sl, tp1=tp1, tp2=tp2, tp3=tp3,
-                    reason=f"Rotation bearish: volledige omslag H→L→LH→LL bevestigd, entry op pullback naar {pb:.0f}",
-                    confidence=0.78
-                )
+        ll_age = n_prev - swing_lows[-1][0]
+        if ll_age <= 10:
+            pb = construction['pullback_level']
+            with_trend = (structure_4h == 'downtrend' or structure_4h is None)
+            confirm_ok = confirmation_candle(candles, 'bearish') if not with_trend else True
+            if (strong_volume and
+                    near_level(close, pb, 0.01) and
+                    close < open_ and
+                    has_strong_body(candles[-1]) and
+                    gains_level(close, pb, 'sell') and
+                    confirm_ok):
+                sl = high * 1.0015
+                sl_5m = _refine_sl_5m(candles_5m, 'sell')
+                if sl_5m and sl_5m < sl:
+                    sl = sl_5m
+                if sl - close > 0:
+                    tp1, tp2, tp3 = find_tp_levels(close, 'sell', key_levels_temp, candles)
+                    trend_tag = "met 4H trend" if with_trend else "COUNTER-TREND"
+                    return Signal(
+                        setup_type='rotation', side='sell',
+                        entry=close, stop_loss=sl, tp1=tp1, tp2=tp2, tp3=tp3,
+                        reason=f"Rotation bearish ({trend_tag}): H→L→LH→LL, pullback {pb:.0f}, LL {ll_age}c geleden",
+                        confidence=0.78
+                    )
     return None
 
 # ─── ATR Helper ───────────────────────────────────────────────────────────────
@@ -699,16 +524,15 @@ def calculate_context_score(candles_15m: list, candles_1h: list, candles_4h: lis
                              candles_5m: list = None) -> dict:
     """
     Score 0-100. ATR SL check is mandatory — if it fails, score=0 and setup is invalid.
-    Returns dict with 'score' (int), 'valid' (bool), 'breakdown' (dict of factor->points).
 
-    Factoren (DoopieCash-gewogen — 4H-uitlijning en 'gain the level' wegen het zwaarst):
-    - ATR SL geldigheid:                15 pts (verplicht)
-    - 4H trend bevestigd + uitgelijnd:  25 pts
-    - Bevestigingscandle wint niveau:   20 pts
-    - 1H trend uitlijning:              15 pts
-    - Volume bevestiging:               10 pts
-    - Level cleanliness:                10 pts
-    - Round number nabijheid:            5 pts
+    Gewichten (totaal = 100):
+    - ATR SL minimum gehaald:          5 pts  (verplicht — als NIET gehaald: score=0)
+    - 4H trend bevestigd + uitgelijnd: 25 pts
+    - Gain filter geslaagd:            20 pts  (close 0.15%+ voorbij level, body 50%+)
+    - Context TF (1H/15m) uitlijning:  15 pts
+    - Volume >1.2× gemiddeld:          15 pts
+    - Level schoon (≤4 touches):       10 pts
+    - Round number proximity (0.3%):   10 pts
     """
     breakdown = {}
     score = 0
@@ -720,10 +544,10 @@ def calculate_context_score(candles_15m: list, candles_1h: list, candles_4h: lis
     sl_dist = abs(signal.entry - signal.stop_loss)
     if atr14 > 0 and sl_dist < atr14 * atr_multiplier:
         return {'score': 0, 'valid': False, 'breakdown': {'atr_sl': 0}}
-    breakdown['atr_sl'] = 15
-    score += 15
+    breakdown['atr_sl'] = 5
+    score += 5
 
-    # ── 4H trend bevestigd EN setup is ermee uitgelijnd (DoopieCash kernregel) ─
+    # ── 4H trend bevestigd EN setup is ermee uitgelijnd ───────────────────────
     if candles_4h and len(candles_4h) >= 10:
         s4h = get_market_structure(candles_4h)
         if ((s4h == 'uptrend'   and signal.side == 'buy') or
@@ -734,50 +558,45 @@ def calculate_context_score(candles_15m: list, candles_1h: list, candles_4h: lis
     else:
         breakdown['trend_4h'] = 0
 
-    # ── Bevestigingscandle 'wint' het niveau (close voorbij swingpunt) ─────────
-    if _entry_gains_level(candles_15m, signal, all_levels):
+    # ── Gain filter: close voorbij level én sterke body ──────────────────────
+    if _entry_gains_level(candles_15m, signal, all_levels) and has_strong_body(candles_15m[-1]):
         breakdown['gains_level'] = 20; score += 20
     else:
         breakdown['gains_level'] = 0
 
-    # ── 1H trend confirms signal direction ────────────────────────────────────
+    # ── Context TF trend uitlijning (1H voor daytrade, 15m voor scalp) ───────
     s1h = get_market_structure(candles_1h)
     if ((s1h == 'uptrend'   and signal.side == 'buy') or
         (s1h == 'downtrend' and signal.side == 'sell')):
-        breakdown['trend_1h'] = 15; score += 15
+        breakdown['trend_ctx'] = 15; score += 15
     else:
-        breakdown['trend_1h'] = 0
+        breakdown['trend_ctx'] = 0
 
-    # ── Volume confirmation ───────────────────────────────────────────────────
+    # ── Volume confirmation: >1.2× gemiddeld van laatste 20 candles ─────────
     avg_vol = avg_volume(candles_15m, 20)
     curr_vol = candles_15m[-1][5] if len(candles_15m[-1]) > 5 else 0
     if avg_vol > 0 and curr_vol >= avg_vol * 1.2:
-        breakdown['volume'] = 10; score += 10
+        breakdown['volume'] = 15; score += 15
     else:
         breakdown['volume'] = 0
 
-    # ── Level cleanliness: max 2 prior touches ────────────────────────────────
+    # ── Level schoon: maximaal 4 eerdere touches ──────────────────────────────
     entry = signal.entry
     nearby = [l for l in all_levels if abs(l.price - entry) / entry < 0.005]
-    if nearby and max(l.strength for l in nearby) <= 2:
+    if not nearby or max(l.strength for l in nearby) <= 4:
         breakdown['level_clean'] = 10; score += 10
-    elif not nearby:
-        breakdown['level_clean'] = 10; score += 10  # no prior level = clean
     else:
         breakdown['level_clean'] = 0
 
-    # ── Round number proximity (within 0.3% of x000 or x500) ─────────────────
+    # ── Round number proximity (binnen 0.3% van x000 of x500) ────────────────
     rounded_000 = round(entry / 1000) * 1000
     rounded_500 = round(entry / 500) * 500
     dist = min(abs(entry - rounded_000), abs(entry - rounded_500)) / entry
     if dist < 0.003:
-        breakdown['round_number'] = 5; score += 5
+        breakdown['round_number'] = 10; score += 10
     else:
         breakdown['round_number'] = 0
 
-    # 'valid' geeft alleen aan dat de verplichte ATR-SL check is gepasseerd —
-    # de daadwerkelijke score-drempel (55 normaal / 70 counter-trend) wordt
-    # in analyze() toegepast, omdat die afhangt van het type setup.
     return {'score': min(score, 100), 'valid': True, 'breakdown': breakdown}
 
 
@@ -786,33 +605,19 @@ def calculate_context_score(candles_15m: list, candles_1h: list, candles_4h: lis
 def _detect_signal(candles, structure_1h: str, structure_4h: Optional[str],
                    candles_5m: list, off: set, scalp_mode: bool):
     """
-    Doorloopt de setup-checkers in DoopieCash-prioriteitsvolgorde voor één
-    timeframe en past de overkoepelende regels toe:
-    - 4h trend verplicht: bij ranging/onduidelijke 4h is ALLEEN Liquidity Sweep
-      toegestaan — alle andere setups zijn geblokkeerd
-    - Scalp modus: ALLEEN Liquidity Sweep en Breakout toegestaan
+    Doorloopt Rotation en Continuation in prioriteitsvolgorde voor één timeframe.
+    - 4H trending verplicht: ranging/onduidelijk → geen trades
+    - Beide setups actief voor zowel daytrade als scalp
     Geeft (signal, key_levels van dit timeframe) terug.
     """
     levels = find_key_levels(candles)
-    clear_4h_trend = structure_4h in ('uptrend', 'downtrend')
 
-    sweep = check_liquidity_sweep(candles, levels, structure_1h, candles_5m) \
-        if 'liquidity_sweep' not in off else None
-    if sweep:
-        return sweep, levels
-
-    if not clear_4h_trend:
-        # 4h ranging/onduidelijk → alleen Liquidity Sweep toegestaan
+    if structure_4h not in ('uptrend', 'downtrend'):
+        # 4H ranging of onbekend → geen trades
         return None, levels
 
-    if scalp_mode:
-        sig = check_breakout(candles, levels, structure_1h, structure_4h, candles_5m) \
-            if 'breakout' not in off else None
-        return sig, levels
-
     sig = (
-        (check_rotation(candles, candles_5m) if 'rotation' not in off else None) or
-        (check_breakout(candles, levels, structure_1h, structure_4h, candles_5m) if 'breakout' not in off else None) or
+        (check_rotation(candles, structure_4h, candles_5m) if 'rotation' not in off else None) or
         (check_continuation(candles, levels, structure_1h, structure_4h, candles_5m) if 'continuation' not in off else None)
     )
     return sig, levels
@@ -826,32 +631,15 @@ def analyze(candles_15m: list, candles_1h: list, cooldown_candles: int = 0,
             scalp_mode: bool = False,
             min_cooldown_candles: int = 2) -> Optional[Signal]:
     """
-    Analyseer de markt op alle 4 DoopieCash setups.
-    Gebruikt 4h als leidende trendrichting, 1h voor trendbevestiging, 15m (of 5m
-    in scalp modus) voor instap. Prioriteit: liquidity_sweep > rotation > breakout > continuation
+    Analyseer de markt op Rotation en Continuation.
+    4H is leidend (ranging = geen trades). Context: 1H voor daytrade, 15m voor scalp.
+    Prioriteit: rotation > continuation.
 
-    Overkoepelende DoopieCash-regels:
-    - 4h trend is verplicht: bij ranging/onduidelijke 4h structuur is ALLEEN
-      Liquidity Sweep toegestaan — dat is de enige setup die ook in een
-      onduidelijke markt liquiditeit mag pakken.
-    - 'Gain the level': bevestigingscandles moeten relevante levels met hun
-      CLOSE winnen — een wick alleen telt niet (afgedwongen in elke checker).
-    - Scalp modus: alleen Liquidity Sweep en Breakout toegestaan; TP1=0.8R,
-      TP2=1.5R, SL=1.0× ATR op 5m.
-
-    cooldown_candles: aantal candles sinds laatste SL — geen trades tijdens cooldown.
-    min_cooldown_candles: drempel waarop de cooldown voorbij is (default 2 candles
-        = 30 min op 15m). Scalp gebruikt 1 — sneller weer setups zoeken na een SL,
-        omdat 5m-candles al veel sneller gaan dan 15m.
-    candles_4h: bepaalt de leidende richting. Setups tegen de 4h trend in worden
-        gemarkeerd als counter-trend en lopen via strengere regels: halve
-        positiegrootte, max 1.5R (geen TP3/runner) en hogere score-eis (≥70).
-    candles_30m / candles_1m: optionele extra timeframes — als opgegeven en het
-        primaire timeframe levert geen signaal op, wordt hier ook op gezocht
-        (DoopieCash frequentie-regel: daytrade kijkt op 15m én 30m, scalp op 5m én 1m).
-    session_filter: niet meer gebruikt (altijd False), bewaard voor compatibiliteit.
-    scalp_mode: als True, gebruik tightere SL minimum (1.0× ATR op 5m) en TP1/TP2
-        op 0.8R/1.5R in plaats van chart-gebaseerde levels.
+    cooldown_candles: candles sinds laatste SL.
+    min_cooldown_candles: cooldown-drempel (default 2 op 15m, scalp gebruikt 1).
+    candles_4h: leidende richting. Counter-trend = halve positie, max 1.5R, score ≥70.
+    candles_30m / candles_1m: secundaire timeframes (daytrade: 15m+30m, scalp: 5m+1m).
+    scalp_mode: tightere SL (1.0×ATR op 5m), TP1=0.8R, TP2=1.5R.
     """
     if len(candles_15m) < 30 or len(candles_1h) < 20:
         logger.warning("Niet genoeg candles voor analyse")
@@ -886,7 +674,8 @@ def analyze(candles_15m: list, candles_1h: list, cooldown_candles: int = 0,
         logger.info(f"Uitgeschakelde setups: {', '.join(off)}")
 
     if structure_4h not in ('uptrend', 'downtrend'):
-        logger.info(f"{mode_label} 4h is {structure_4h or 'onbekend'} — alleen Liquidity Sweep toegestaan")
+        logger.info(f"{mode_label} 4h is {structure_4h or 'onbekend'} — geen trades (4H trending vereist)")
+        return None
 
     signal, levels_primary = _detect_signal(candles_15m, structure_1h, structure_4h, candles_5m, off, scalp_mode)
     timeframe_used = '15m' if not scalp_mode else '5m'
@@ -982,19 +771,21 @@ def analyze(candles_15m: list, candles_1h: list, cooldown_candles: int = 0,
         # overige factoren dat hoeft te kloppen.
         ctx = calculate_context_score(candles_15m, candles_1h, candles_4h or [], signal, all_levels,
                                       scalp_mode=scalp_mode, candles_5m=candles_5m)
-        # Frequentie-regel (daytrade): als 4h én 1h allebei duidelijk en in
-        # dezelfde richting trenden, is de uitlijning zo sterk dat de score-eis
-        # nog verder omlaag mag — naar 40. Alleen voor daytrade (15m), niet
-        # scalp: op 5m is de 1h-uitlijning minder betekenisvol voor de instap.
+        # Score-drempel: afhankelijk van trenduitlijning en modus
+        # 4H+context TF beide trending → 40 (ook voor scalp waar context TF = 15m)
+        # Enkele 4H trending → 45
+        # Counter-trend → 70
+        # 4H ranging: al eerder geblokkeerd, komt hier niet meer
         double_trend_aligned = (
-            not scalp_mode
-            and structure_4h in ('uptrend', 'downtrend')
+            structure_4h in ('uptrend', 'downtrend')
             and structure_1h == structure_4h
         )
         if is_counter_trend:
             min_score = 70
         elif double_trend_aligned:
             min_score = 40
+        elif scalp_mode:
+            min_score = 40  # scalp: 40 bij duidelijke 4H trend (spec punt 6)
         elif structure_4h in ('uptrend', 'downtrend'):
             min_score = 45
         else:

@@ -48,10 +48,8 @@ const HEALTH = {
 };
 
 const SETUP_META = [
-  { key: "liquidity_sweep", label: "Liq. Sweep",   desc: "Fake-out op key level" },
-  { key: "rotation",        label: "Rotation",     desc: "Structuurbreuk"        },
-  { key: "breakout",        label: "Breakout",     desc: "Break + retest"        },
-  { key: "continuation",    label: "Continuation", desc: "Pullback constructie"  },
+  { key: "rotation",     label: "Rotation",     desc: "L→H→HL→HH / H→L→LH→LL" },
+  { key: "continuation", label: "Continuation", desc: "Pullback naar oud niveau" },
 ];
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
