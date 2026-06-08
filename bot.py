@@ -67,6 +67,7 @@ class BotState:
     disabled_setups: list = field(default_factory=list)  # ['rotation', 'continuation', ...]
     sl_cooldown_candles: int = 0  # candles sinds laatste SL; 1 = cooldown actief, 0 = vrij
     trade_mode: str = "daytrade"   # "daytrade" | "scalp" | "both"
+    trade_direction: str = "both"  # "both" | "long_only" | "short_only"
     last_5m_ts: str = ""           # alleen gebruikt in 'both' mode
 
 state = BotState()
@@ -508,8 +509,9 @@ def _check_open_trades_live(exchange):
 
 
 def run_bot():
-    state.sim_mode   = os.environ.get('SIM_MODE', 'true').lower() == 'true'
-    state.trade_mode = os.environ.get('TRADE_MODE', 'daytrade').lower()
+    state.sim_mode        = os.environ.get('SIM_MODE', 'true').lower() == 'true'
+    state.trade_mode      = os.environ.get('TRADE_MODE', 'daytrade').lower()
+    state.trade_direction = os.environ.get('TRADE_DIRECTION', 'both').lower()
     mode_label = "PAPER TRADING" if state.sim_mode else "LIVE TRADING"
 
     # DB initialiseren en bestaande trades laden
@@ -673,6 +675,16 @@ def run_bot():
                             session_filter=False,
                             scalp_mode=True,
                         )
+
+                # Richting-filter: verwerp signalen die niet binnen TRADE_DIRECTION vallen
+                if signal and state.trade_direction != 'both':
+                    allowed = 'buy' if state.trade_direction == 'long_only' else 'sell'
+                    if signal.side != allowed:
+                        logger.info(
+                            f"Signal verworpen door TRADE_DIRECTION={state.trade_direction} "
+                            f"(signaal was {signal.side})"
+                        )
+                        signal = None
 
                 # Signal expiry check: als entry >0.5% van huidige prijs afwijkt, verwerp
                 if signal:
