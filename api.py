@@ -28,7 +28,7 @@ app.add_middleware(
 bot_thread: threading.Thread = None
 
 class BotConfig(BaseModel):
-    symbol: str = "BTC/USDT"
+    symbol: str = "BTC/USDT:USDT"
     timeframe: str = "15m"
     risk_per_trade: float = 0.01
 
@@ -148,7 +148,7 @@ def get_stats():
 def get_live_candles(timeframe: str = "15m", limit: int = 150):
     try:
         exchange = get_public_exchange()
-        symbol = state.symbol if state.symbol else "BTC/USDT"
+        symbol = state.symbol if state.symbol else "BTC/USDT:USDT"
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
         return [
             {"time": int(c[0] / 1000), "open": c[1], "high": c[2], "low": c[3], "close": c[4], "volume": c[5]}
@@ -200,7 +200,7 @@ def get_reviews_summary():
 # ── Backtest endpoints ────────────────────────────────────────────────────────
 
 class BacktestRequest(BaseModel):
-    symbol: str           = "BTC/USDT"
+    symbol: str           = "BTC/USDT:USDT"
     days: int             = 90
     test_pct: float       = 0.30
     risk_per_trade: float = 0.01

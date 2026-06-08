@@ -42,7 +42,7 @@ class Trade:
 @dataclass
 class BotState:
     running: bool = False
-    symbol: str = "BTC/USDT"
+    symbol: str = "BTC/USDT:USDT"
     risk_per_trade: float = 0.01
     sim_mode: bool = True
     sim_balance: float = 10000.0
@@ -98,7 +98,7 @@ def send_telegram(message: str):
 
 def get_public_exchange():
     """OKX publieke API voor marktdata — geen auth nodig."""
-    return ccxt.okx({'options': {'defaultType': 'spot'}})
+    return ccxt.okx({'options': {'defaultType': 'swap'}})
 
 def get_exchange():
     """OKX met auth — alleen nodig in LIVE mode voor orderplaatsing."""
@@ -111,7 +111,7 @@ def get_exchange():
         'apiKey':   api_key,
         'secret':   secret,
         'password': passphrase,
-        'options':  {'defaultType': 'spot'},
+        'options':  {'defaultType': 'swap'},
     }
     if sandbox:
         params['headers'] = {'x-simulated-trading': '1'}

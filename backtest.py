@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class BacktestConfig:
-    symbol: str          = "BTC/USDT"
+    symbol: str          = "BTC/USDT:USDT"
     days: int            = 90      # totale periode
     test_pct: float      = 0.30    # laatste 30% = test window
     risk_per_trade: float = 0.01
