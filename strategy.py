@@ -1,26 +1,23 @@
 """
 DoopieCash Strategy Engine
 ==========================
-2 trade setups op 15m/1h timeframe (daytrade) of 5m/15m (scalp):
-
-1. ROTATION     — volledige constructie L→H→HL→HH (of H→L→LH→LL), entry op pullback
-2. CONTINUATION — pullback naar oud resistance/support level, minimaal 2 candles consolidatie
+2 trade setups: Rotation en Continuation
 
 Kernprincipes:
-- 4H is leidend: ranging/onduidelijke 4H = geen trades
-- Met 4H trend → limit-entry op het level (geen extra confirmatie nodig)
-- Tegen 4H trend → confirmatie candle verplicht (hogere score-eis + counter-trend regime)
+- Prijsconstructie is leidend — de setup bewijst zichzelf via HH+HL / LL+LH
+- 4H en 1H geven alleen een score-bonus (met-trend = hogere score), nooit een blokkade
+- Beide richtingen altijd tradeable: in uptrend mag je shorten, in downtrend longen
 - 'Gain the level': close moet minimaal 0.15% voorbij het swing punt/level sluiten
 - Body filter: body van entry candle minimaal 50% van totale candle range
 - SL altijd prijsconstructie-gebaseerd: 0.15% buffer buiten het swing punt
 
 Risk management:
 - Max 1× open daytrade + 1× open scalp tegelijk (totaal max 2 posities)
-- TP1 (25%) — SL NIET automatisch naar breakeven, alleen als prijs nieuw level heeft gegained
+- TP1 (25%) — SL niet automatisch naar breakeven, pas bij TP2
 - TP2 (25%) → SL naar breakeven + laatste swing prijsactie
 - TP3 (25%) → SL naar nieuwer swing punt
 - Runner (25%) → SL trailend op marktstructuur
-- Counter-trend: max 1R–1.5R, geen TP3/runner, halve positie, score ≥70
+- Counter-trend (setup tegen 4H bias): halve positie, max 1R–1.5R, geen runner
 """
 
 from dataclasses import dataclass, field
@@ -606,15 +603,10 @@ def _detect_signal(candles, structure_1h: str, structure_4h: Optional[str],
                    candles_5m: list, off: set, scalp_mode: bool):
     """
     Doorloopt Rotation en Continuation in prioriteitsvolgorde voor één timeframe.
-    - 4H trending verplicht: ranging/onduidelijk → geen trades
-    - Beide setups actief voor zowel daytrade als scalp
+    4H-richting blokkeert nooit — het beïnvloedt alleen de contextscore.
     Geeft (signal, key_levels van dit timeframe) terug.
     """
     levels = find_key_levels(candles)
-
-    if structure_4h not in ('uptrend', 'downtrend'):
-        # 4H ranging of onbekend → geen trades
-        return None, levels
 
     sig = (
         (check_rotation(candles, structure_4h, candles_5m) if 'rotation' not in off else None) or
@@ -632,12 +624,12 @@ def analyze(candles_15m: list, candles_1h: list, cooldown_candles: int = 0,
             min_cooldown_candles: int = 2) -> Optional[Signal]:
     """
     Analyseer de markt op Rotation en Continuation.
-    4H is leidend (ranging = geen trades). Context: 1H voor daytrade, 15m voor scalp.
+    4H en 1H geven score-bonus maar blokkeren nooit — beide richtingen zijn altijd tradeable.
     Prioriteit: rotation > continuation.
 
     cooldown_candles: candles sinds laatste SL.
-    min_cooldown_candles: cooldown-drempel (default 2 op 15m, scalp gebruikt 1).
-    candles_4h: leidende richting. Counter-trend = halve positie, max 1.5R, score ≥70.
+    min_cooldown_candles: cooldown-drempel (default 3 op 15m, scalp gebruikt 1).
+    candles_4h: bias-richting voor score-bonus en counter-trend risicobeheer.
     candles_30m / candles_1m: secundaire timeframes (daytrade: 15m+30m, scalp: 5m+1m).
     scalp_mode: tightere SL (1.0×ATR op 5m), TP1=0.8R, TP2=1.5R.
     """
@@ -674,8 +666,7 @@ def analyze(candles_15m: list, candles_1h: list, cooldown_candles: int = 0,
         logger.info(f"Uitgeschakelde setups: {', '.join(off)}")
 
     if structure_4h not in ('uptrend', 'downtrend'):
-        logger.info(f"{mode_label} 4h is {structure_4h or 'onbekend'} — geen trades (4H trending vereist)")
-        return None
+        logger.info(f"{mode_label} 4h is {structure_4h or 'onbekend'} — geen score-bonus (traden wel mogelijk)")
 
     signal, levels_primary = _detect_signal(candles_15m, structure_1h, structure_4h, candles_5m, off, scalp_mode)
     timeframe_used = '15m' if not scalp_mode else '5m'
@@ -771,25 +762,25 @@ def analyze(candles_15m: list, candles_1h: list, cooldown_candles: int = 0,
         # overige factoren dat hoeft te kloppen.
         ctx = calculate_context_score(candles_15m, candles_1h, candles_4h or [], signal, all_levels,
                                       scalp_mode=scalp_mode, candles_5m=candles_5m)
-        # Score-drempel: afhankelijk van trenduitlijning en modus
-        # 4H+context TF beide trending → 40 (ook voor scalp waar context TF = 15m)
-        # Enkele 4H trending → 45
-        # Counter-trend → 70
-        # 4H ranging: al eerder geblokkeerd, komt hier niet meer
+        # Score-drempel: 4H en 1H geven alleen bonus, blokkeren nooit.
+        # 4H+context TF beide aligned → laagste drempel (40)
+        # Eén TF aligned → 45
+        # Geen alignment (ranging of counter-trend) → normaal (55)
         double_trend_aligned = (
             structure_4h in ('uptrend', 'downtrend')
             and structure_1h == structure_4h
+            and not is_counter_trend
         )
-        if is_counter_trend:
-            min_score = 70
-        elif double_trend_aligned:
+        single_trend_aligned = (
+            structure_4h in ('uptrend', 'downtrend')
+            and not is_counter_trend
+        )
+        if double_trend_aligned:
             min_score = 40
-        elif scalp_mode:
-            min_score = 40  # scalp: 40 bij duidelijke 4H trend (spec punt 6)
-        elif structure_4h in ('uptrend', 'downtrend'):
+        elif single_trend_aligned:
             min_score = 45
         else:
-            min_score = 55
+            min_score = 55  # ranging of counter-trend: hogere lat (maar niet geblokkeerd)
         if ctx['score'] < min_score:
             logger.info(
                 f"Signal afgewezen: context score te laag ({ctx['score']}/{min_score} vereist"
