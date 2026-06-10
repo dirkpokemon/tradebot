@@ -500,39 +500,125 @@ function SetupHealthPanel({ setupHealth }) {
 
 // ─── Analyse Panel: wat ziet de bot, en waarom (nog) geen trade ──────────────
 
+function TrendBadge({ value }) {
+  if (!value) return <span style={{ color: C.muted, fontSize: 11 }}>—</span>;
+  const map = {
+    uptrend:   { label: "↑ Stijgend",  color: C.green  },
+    downtrend: { label: "↓ Dalend",    color: C.red    },
+    ranging:   { label: "↔ Zijwaarts", color: C.muted  },
+    onbekend:  { label: "?",            color: C.dim    },
+  };
+  const t = map[value] || { label: value, color: C.muted };
+  return (
+    <span style={{
+      fontSize: 11, fontWeight: 700, color: t.color,
+      background: t.color + "18", borderRadius: 6, padding: "1px 8px",
+    }}>{t.label}</span>
+  );
+}
+
+function AnalysisMode({ a, mode }) {
+  if (!a) return null;
+  const isSignal   = (a.result || "").startsWith("SIGNAAL");
+  const isCooldown = (a.result || "").includes("cooldown");
+  const ts = a.ts ? a.ts.replace("T", " ").replace("Z", " UTC") : null;
+
+  // Resultaatkleur en icoon
+  let resultColor = C.text, resultIcon = "○";
+  if (isSignal)   { resultColor = C.green;  resultIcon = "●"; }
+  if (isCooldown) { resultColor = C.yellow; resultIcon = "⏸"; }
+
+  // Score uit breakdown als beschikbaar
+  const bd = a.score_breakdown;
+
+  return (
+    <div style={{
+      border: `1px solid ${isSignal ? C.green + "44" : C.border}`,
+      borderRadius: 10, padding: "12px 14px",
+      background: isSignal ? C.greenBg : "#fafbfd",
+    }}>
+      {/* Header: mode + timestamp */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 1.2, textTransform: "uppercase", color: C.muted }}>
+          {mode}
+        </span>
+        {ts && <span style={{ fontSize: 9, color: C.dim }}>{ts}</span>}
+      </div>
+
+      {/* Marktstructuur */}
+      {a.structuur && (
+        <div style={{ display: "grid", gridTemplateColumns: "40px 1fr", gap: "4px 8px", marginBottom: 10, alignItems: "center" }}>
+          <span style={{ fontSize: 9, color: C.muted, letterSpacing: 0.8, textTransform: "uppercase" }}>4H</span>
+          <TrendBadge value={a.structuur["4h"]} />
+          <span style={{ fontSize: 9, color: C.muted, letterSpacing: 0.8, textTransform: "uppercase" }}>1H</span>
+          <TrendBadge value={a.structuur.context} />
+          <span style={{ fontSize: 9, color: C.muted, letterSpacing: 0.8, textTransform: "uppercase" }}>15M</span>
+          <TrendBadge value={a.structuur.entry} />
+        </div>
+      )}
+
+      {/* Resultaat */}
+      <div style={{
+        display: "flex", alignItems: "flex-start", gap: 6,
+        padding: "8px 10px", borderRadius: 8,
+        background: isSignal ? C.green + "22" : C.border + "55",
+        marginBottom: (a.notes?.length || bd) ? 8 : 0,
+      }}>
+        <span style={{ fontSize: 14, lineHeight: 1, color: resultColor, flexShrink: 0 }}>{resultIcon}</span>
+        <span style={{ fontSize: 11, color: resultColor, fontWeight: isSignal ? 700 : 400, lineHeight: 1.4 }}>
+          {a.result || "—"}
+        </span>
+      </div>
+
+      {/* Score breakdown als een signal bijna haalde */}
+      {bd && !isSignal && (
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 9, color: C.muted, letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 }}>
+            Score breakdown
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "3px 8px" }}>
+            {Object.entries(bd).map(([k, v]) => (
+              <span key={k} style={{ fontSize: 9, color: v > 0 ? C.green : C.dim }}>
+                {k}: {v > 0 ? "+" : ""}{v}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Diagnostische notes: WAAROM geen setup */}
+      {(a.notes || []).length > 0 && (
+        <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 6 }}>
+          <div style={{ fontSize: 9, color: C.muted, letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 }}>
+            Wat de bot zag
+          </div>
+          {(a.notes || []).map((n, i) => (
+            <div key={i} style={{
+              fontSize: 10, color: C.text, marginBottom: 3, lineHeight: 1.4,
+              paddingLeft: 8, borderLeft: `2px solid ${C.border}`,
+            }}>
+              {n}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AnalysisPanel({ lastAnalysis }) {
   const modes = ["daytrade", "scalp"];
   const hasData = modes.some(m => lastAnalysis?.[m]);
   return (
     <div style={{ background: C.card, borderRadius: 14, padding: 18, boxShadow: C.shadow, marginTop: 16 }}>
-      <SectionLabel>Bot-analyse</SectionLabel>
+      <SectionLabel>Wat doet de bot?</SectionLabel>
       {!hasData ? (
-        <div style={{ fontSize: 10, color: C.muted }}>Nog geen analyse — wacht op de eerste candle…</div>
+        <div style={{ fontSize: 11, color: C.muted, padding: "12px 0" }}>
+          Wacht op de eerste candle — start de bot om analyse te zien.
+        </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          {modes.map(m => {
-            const a = lastAnalysis?.[m];
-            if (!a) return null;
-            const isSignal = (a.result || "").startsWith("SIGNAAL");
-            return (
-              <div key={m}>
-                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: C.muted, marginBottom: 4 }}>
-                  {m}
-                  {a.structuur && (
-                    <span style={{ fontWeight: 400, marginLeft: 6, textTransform: "none", letterSpacing: 0 }}>
-                      4h: {a.structuur["4h"]} · ctx: {a.structuur.context} · entry: {a.structuur.entry}
-                    </span>
-                  )}
-                </div>
-                <div style={{ fontSize: 11, color: isSignal ? C.green : C.text, fontWeight: isSignal ? 700 : 400 }}>
-                  {a.result || "—"}
-                </div>
-                {(a.notes || []).slice(-3).map((n, i) => (
-                  <div key={i} style={{ fontSize: 9, color: C.dim, marginTop: 3 }}>• {n}</div>
-                ))}
-              </div>
-            );
-          })}
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {modes.map(m => <AnalysisMode key={m} a={lastAnalysis?.[m]} mode={m} />)}
         </div>
       )}
     </div>
