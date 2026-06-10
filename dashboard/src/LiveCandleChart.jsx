@@ -15,10 +15,11 @@ const THEME = {
 };
 
 export default function LiveCandleChart({ trades = [] }) {
-  const containerRef = useRef(null);
-  const chartRef     = useRef(null);
-  const seriesRef    = useRef(null);
-  const markersRef   = useRef(null);
+  const containerRef  = useRef(null);
+  const chartRef      = useRef(null);
+  const seriesRef     = useRef(null);
+  const markersRef    = useRef(null);
+  const priceLinesRef = useRef([]);
 
   const [timeframe,   setTimeframe]   = useState("15m");
   const [lastUpdate,  setLastUpdate]  = useState(null);
@@ -84,13 +85,31 @@ export default function LiveCandleChart({ trades = [] }) {
     if (!seriesRef.current) return;
     try {
       const res = await fetch(`${API_URL}/candles?timeframe=${timeframe}&limit=150`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        // Toon het echte serverfout-detail zodat we kunnen zien wat er mis is
+        let detail = `HTTP ${res.status}`;
+        try {
+          const body = await res.json();
+          if (body?.detail) detail = String(body.detail).slice(0, 160);
+        } catch { /* geen JSON body */ }
+        throw new Error(detail);
+      }
       const candles = await res.json();
       if (!candles.length) return;
 
       seriesRef.current.setData(candles);
+      chartRef.current?.timeScale().fitContent();
+      setLastUpdate(new Date().toLocaleTimeString("nl-NL"));
+      setError(null);
+    } catch (e) {
+      setError(e?.message || "Kan candles niet ophalen");
+      setLoading(false);
+      return;
+    }
 
-      // Rebuild markers
+    // Markers + entry/SL/TP-lijnen in een eigen try: een fout hier mag de
+    // candle-weergave zelf niet blokkeren.
+    try {
       if (markersRef.current) {
         markersRef.current.detach();
         markersRef.current = null;
@@ -112,20 +131,37 @@ export default function LiveCandleChart({ trades = [] }) {
             text:     label,
           };
         })
+        .filter(m => Number.isFinite(m.time))
         .sort((a, b) => a.time - b.time);
 
       if (markers.length) {
         markersRef.current = createSeriesMarkers(seriesRef.current, markers);
       }
 
-      chartRef.current?.timeScale().fitContent();
-      setLastUpdate(new Date().toLocaleTimeString("nl-NL"));
-      setError(null);
-    } catch (e) {
-      setError("Kan candles niet ophalen");
-    } finally {
-      setLoading(false);
-    }
+      // Entry/SL/TP-prijslijnen voor OPEN trades
+      priceLinesRef.current.forEach(pl => {
+        try { seriesRef.current.removePriceLine(pl); } catch { /* al verwijderd */ }
+      });
+      priceLinesRef.current = [];
+      trades
+        .filter(t => t.status !== "closed" && t.entry_price)
+        .forEach(t => {
+          const addLine = (price, color, title, style = 2) => {
+            if (!price) return;
+            priceLinesRef.current.push(seriesRef.current.createPriceLine({
+              price, color, lineWidth: 1, lineStyle: style,
+              axisLabelVisible: true, title,
+            }));
+          };
+          addLine(t.entry_price, "#3b5bdb", "entry", 0);
+          addLine(t.stop_loss,   THEME.red,  "SL");
+          addLine(t.tp1, THEME.green, "TP1");
+          addLine(t.tp2, THEME.green, "TP2");
+          addLine(t.tp3, THEME.green, "TP3");
+        });
+    } catch { /* markers/lijnen zijn nice-to-have */ }
+
+    setLoading(false);
   }, [timeframe, trades]);
 
   useEffect(() => {

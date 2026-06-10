@@ -8,7 +8,8 @@ import {
 } from "recharts";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
-const SYMBOLS = ["BTC/USDC", "BTC/USDT", "ETH/USDC", "ETH/USDT", "SOL/USDC", "SOL/USDT"];
+// Perpetual futures symbolen (long én short) — spot verwijderd
+const SYMBOLS = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"];
 
 // ─── Theme ────────────────────────────────────────────────────────────────────
 
@@ -483,10 +484,10 @@ function SetupHealthPanel({ setupHealth }) {
                 </div>
                 <Tag color={health.color} bg={health.bg}>{health.label}</Tag>
               </div>
-              <WinRateBar value={h?.recent_win_rate ?? null} small />
-              {h?.recent_trades > 0 && (
+              <WinRateBar value={h?.win_rate != null ? Math.round(h.win_rate * 100) : null} small />
+              {h?.trades > 0 && (
                 <div style={{ fontSize: 9, color: C.dim, marginTop: 3 }}>
-                  {h.recent_trades} recente trades
+                  {h.trades} recente trades
                 </div>
               )}
             </div>
@@ -1010,7 +1011,7 @@ function TradeReviewPanel({ closedTrades }) {
 // ─── Backtest Panel ───────────────────────────────────────────────────────────
 
 function BacktestPanel() {
-  const [btConfig, setBtConfig] = useState({ symbol: "BTC/USDT", days: 90, test_pct: 0.30, trade_mode: "daytrade" });
+  const [btConfig, setBtConfig] = useState({ symbol: "BTC/USDT:USDT", days: 90, test_pct: 0.30, trade_mode: "daytrade" });
   const [bt, setBt]     = useState(null);
   const [loading, setLoading] = useState(false);
 
@@ -1513,7 +1514,7 @@ function LearningStatsPanel() {
 export default function Dashboard() {
   const [status, setStatus] = useState(null);
   const [stats,  setStats]  = useState(null);
-  const [config, setConfig] = useState({ symbol: "BTC/USDT", risk_per_trade: 0.01 });
+  const [config, setConfig] = useState({ symbol: "BTC/USDT:USDT", risk_per_trade: 0.01 });
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState(null);
 
