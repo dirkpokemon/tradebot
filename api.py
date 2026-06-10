@@ -59,6 +59,7 @@ def get_status():
         "setup_health": {s: get_setup_health(s) for s in SETUP_TYPES},
         "trade_mode": state.trade_mode,
         "trade_direction": state.trade_direction,
+        "last_analysis": state.last_analysis,
     }
 
 @app.post("/start")

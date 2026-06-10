@@ -497,6 +497,47 @@ function SetupHealthPanel({ setupHealth }) {
   );
 }
 
+// ─── Analyse Panel: wat ziet de bot, en waarom (nog) geen trade ──────────────
+
+function AnalysisPanel({ lastAnalysis }) {
+  const modes = ["daytrade", "scalp"];
+  const hasData = modes.some(m => lastAnalysis?.[m]);
+  return (
+    <div style={{ background: C.card, borderRadius: 14, padding: 18, boxShadow: C.shadow, marginTop: 16 }}>
+      <SectionLabel>Bot-analyse</SectionLabel>
+      {!hasData ? (
+        <div style={{ fontSize: 10, color: C.muted }}>Nog geen analyse — wacht op de eerste candle…</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {modes.map(m => {
+            const a = lastAnalysis?.[m];
+            if (!a) return null;
+            const isSignal = (a.result || "").startsWith("SIGNAAL");
+            return (
+              <div key={m}>
+                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: C.muted, marginBottom: 4 }}>
+                  {m}
+                  {a.structuur && (
+                    <span style={{ fontWeight: 400, marginLeft: 6, textTransform: "none", letterSpacing: 0 }}>
+                      4h: {a.structuur["4h"]} · ctx: {a.structuur.context} · entry: {a.structuur.entry}
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontSize: 11, color: isSignal ? C.green : C.text, fontWeight: isSignal ? 700 : 400 }}>
+                  {a.result || "—"}
+                </div>
+                {(a.notes || []).slice(-3).map((n, i) => (
+                  <div key={i} style={{ fontSize: 9, color: C.dim, marginTop: 3 }}>• {n}</div>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Config Panel ─────────────────────────────────────────────────────────────
 
 function ConfigPanel({ config, setConfig, isRunning, loading, onStart, onStop }) {
@@ -1630,6 +1671,7 @@ export default function Dashboard() {
             onStart={startBot} onStop={stopBot}
           />
           <SetupHealthPanel setupHealth={status?.setup_health} />
+          <AnalysisPanel lastAnalysis={status?.last_analysis} />
         </div>
 
         {/* Main */}

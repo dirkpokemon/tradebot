@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Optional
 from dataclasses import dataclass, field, asdict
 
-from strategy import analyze, Signal, get_swing_points, calc_atr
+from strategy import analyze, Signal, get_swing_points, calc_atr, get_last_analysis
 from db import init_db, save_trade, update_trade, load_trades, clear_trades as db_clear_trades
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
@@ -69,6 +69,8 @@ class BotState:
     trade_mode: str = "daytrade"   # "daytrade" | "scalp" | "both"
     trade_direction: str = "both"  # "both" | "long_only" | "short_only"
     last_5m_ts: str = ""           # alleen gebruikt in 'both' mode
+    # Diagnostiek: wat zag de laatste analyse per modus (voor dashboard/status)
+    last_analysis: dict = field(default_factory=dict)
 
 state = BotState()
 
@@ -597,6 +599,16 @@ def run_bot():
             new_15m = curr_15m_ts != state.last_candle_time
             new_5m  = curr_5m_ts  != state.last_5m_ts
 
+            # BELANGRIJK: de laatste candle in elke reeks is de NET GEOPENDE
+            # (forming) candle — body ≈ 0, close ≈ open. Entry-condities (body
+            # ≥50%, gain the level) moeten op de zojuist GESLOTEN candle worden
+            # beoordeeld, anders faalt vrijwel elke setup. Daarom strippen we de
+            # forming candle van alle entry-timeframes voor analyze().
+            closed_15m = candles_15m[:-1]
+            closed_5m  = candles_5m[:-1]
+            closed_30m = candles_30m[:-1] if candles_30m else None
+            closed_1m  = candles_1m[:-1]  if candles_1m  else None
+
             # Daytrade en 'both' werken identiek: 15m heeft prioriteit, 5m is fallback
             # wanneer 15m geen setup oplevert (DoopieCash punt 9 — meer trades genereren
             # door ook lagere timeframes te doorzoeken i.p.v. te wachten op 15m).
@@ -658,8 +670,9 @@ def run_bot():
                         if sig.side != allowed:
                             logger.info(f"Signal verworpen: TRADE_DIRECTION={state.trade_direction}")
                             return None
-                    # Expiry: entry mag max 0.5% van huidige prijs afwijken
-                    ref_price = candles_15m[-1][4]
+                    # Expiry: entry mag max 0.5% van huidige prijs afwijken.
+                    # Referentie = live (forming) close van het eigen timeframe.
+                    ref_price = candles_5m[-1][4] if eff_mode == 'scalp' else candles_15m[-1][4]
                     if abs(sig.entry - ref_price) / ref_price > 0.005:
                         logger.info(f"Signal vervallen: {sig.entry:.0f} vs {ref_price:.0f}")
                         return None
@@ -675,14 +688,15 @@ def run_bot():
                     # ── Daytrade pad: nieuwe 15m candle + geen daytrade open ──────────────
                     if new_15m and open_daytrade == 0:
                         dt_sig = analyze(
-                            candles_15m, candles_1h,
+                            closed_15m, candles_1h,
                             cooldown_candles=state.sl_cooldown_candles,
                             candles_4h=candles_4h,
-                            candles_5m=candles_5m,
-                            candles_30m=candles_30m,
+                            candles_5m=closed_5m,
+                            candles_30m=closed_30m,
                             disabled_setups=state.disabled_setups,
                             session_filter=False,
                         )
+                        state.last_analysis['daytrade'] = get_last_analysis()
                         trade = _try_place(dt_sig, 'DAYTRADE', 'daytrade')
                         if trade:
                             state.trades.append(trade)
@@ -693,16 +707,17 @@ def run_bot():
                     # ── Scalp pad: nieuwe 5m candle + geen scalp open (onafhankelijk) ─────
                     if new_5m and open_scalp == 0:
                         sc_sig = analyze(
-                            candles_5m, candles_15m,
+                            closed_5m, closed_15m,
                             cooldown_candles=state.sl_cooldown_candles,
                             min_cooldown_candles=1,
                             candles_4h=candles_4h,
                             candles_5m=None,
-                            candles_1m=candles_1m,
+                            candles_1m=closed_1m,
                             disabled_setups=state.disabled_setups,
                             session_filter=False,
                             scalp_mode=True,
                         )
+                        state.last_analysis['scalp'] = get_last_analysis()
                         trade = _try_place(sc_sig, 'SCALP', 'scalp')
                         if trade:
                             state.trades.append(trade)
@@ -716,12 +731,12 @@ def run_bot():
                     if open_count == 0:
                         if state.trade_mode == 'scalp':
                             sig = analyze(
-                                candles_5m, candles_15m,
+                                closed_5m, closed_15m,
                                 cooldown_candles=state.sl_cooldown_candles,
                                 min_cooldown_candles=1,
                                 candles_4h=candles_4h,
                                 candles_5m=None,
-                                candles_1m=candles_1m,
+                                candles_1m=closed_1m,
                                 disabled_setups=state.disabled_setups,
                                 session_filter=False,
                                 scalp_mode=True,
@@ -729,14 +744,15 @@ def run_bot():
                             eff = 'scalp'
                         else:
                             sig = analyze(
-                                candles_15m, candles_1h,
+                                closed_15m, candles_1h,
                                 cooldown_candles=state.sl_cooldown_candles,
                                 candles_4h=candles_4h,
-                                candles_5m=candles_5m,
+                                candles_5m=closed_5m,
                                 disabled_setups=state.disabled_setups,
                                 session_filter=False,
                             )
                             eff = 'daytrade'
+                        state.last_analysis[eff] = get_last_analysis()
                         trade = _try_place(sig, state.trade_mode.upper(), eff)
                         if trade:
                             state.trades.append(trade)

@@ -27,6 +27,19 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# ─── Analyse-diagnostiek ──────────────────────────────────────────────────────
+# Houdt bij waarom de laatste analyze() wel/geen signaal opleverde. De bot kopieert
+# dit naar state.last_analysis zodat dashboard en /status kunnen tonen waar de
+# bot op wacht — in plaats van dagenlang stil te lijken.
+_analysis_notes: list = []
+_last_analysis: dict = {}
+
+def _note(msg: str):
+    _analysis_notes.append(msg)
+
+def get_last_analysis() -> dict:
+    return dict(_last_analysis)
+
 # ─── Volume helpers ───────────────────────────────────────────────────────────
 
 def avg_volume(candles: list, n: int = 20) -> float:
@@ -293,6 +306,7 @@ def check_continuation(candles, key_levels: list[Level], structure: str,
     - SL: 0.15% buiten het meest recente swing punt (low/high van de entry candle)
     """
     if structure not in ('uptrend', 'downtrend'):
+        _note("continuation: entry-timeframe is ranging — continuation vereist een duidelijke trend")
         return None
 
     close = candles[-1][4]
@@ -312,8 +326,10 @@ def check_continuation(candles, key_levels: list[Level], structure: str,
                 gains_level(close, lp, 'buy') and
                 level.strength >= 1):
 
-            with_trend = (structure_4h == 'uptrend' or structure_4h is None)
-            if not with_trend and not confirmation_candle(candles, 'bullish'):
+            # Confirmatie alleen verplicht bij echte counter-trend (4H trendt tegen)
+            counter_trend = (structure_4h == 'downtrend')
+            if counter_trend and not confirmation_candle(candles, 'bullish'):
+                _note(f"continuation long bij {lp:.0f}: counter-trend, wacht op confirmatie-candle")
                 continue
 
             sl = low * 0.9985
@@ -323,9 +339,10 @@ def check_continuation(candles, key_levels: list[Level], structure: str,
             if close - sl <= 0 or close - sl < (close * 0.003):
                 continue
             tp1, tp2, tp3 = find_tp_levels(close, 'buy', key_levels, candles)
-            if tp2 - close < (close - sl) * 2:
+            if tp2 - close < (close - sl) * 1.5:   # TP2 minimaal 1.5R (was 2R — te streng)
+                _note(f"continuation long bij {lp:.0f}: alle entry-condities OK maar TP2 < 1.5R")
                 continue
-            trend_tag = "met 4H trend" if with_trend else "COUNTER-TREND"
+            trend_tag = "COUNTER-TREND" if counter_trend else ("met 4H trend" if structure_4h == 'uptrend' else "4H neutraal")
             return Signal(
                 setup_type='continuation', side='buy',
                 entry=close, stop_loss=sl, tp1=tp1, tp2=tp2, tp3=tp3,
@@ -342,8 +359,9 @@ def check_continuation(candles, key_levels: list[Level], structure: str,
                 gains_level(close, lp, 'sell') and
                 level.strength >= 1):
 
-            with_trend = (structure_4h == 'downtrend' or structure_4h is None)
-            if not with_trend and not confirmation_candle(candles, 'bearish'):
+            counter_trend = (structure_4h == 'uptrend')
+            if counter_trend and not confirmation_candle(candles, 'bearish'):
+                _note(f"continuation short bij {lp:.0f}: counter-trend, wacht op confirmatie-candle")
                 continue
 
             sl = high * 1.0015
@@ -353,9 +371,10 @@ def check_continuation(candles, key_levels: list[Level], structure: str,
             if sl - close <= 0 or sl - close < (close * 0.003):
                 continue
             tp1, tp2, tp3 = find_tp_levels(close, 'sell', key_levels, candles)
-            if close - tp2 < (sl - close) * 2:
+            if close - tp2 < (sl - close) * 1.5:   # TP2 minimaal 1.5R (was 2R — te streng)
+                _note(f"continuation short bij {lp:.0f}: alle entry-condities OK maar TP2 < 1.5R")
                 continue
-            trend_tag = "met 4H trend" if with_trend else "COUNTER-TREND"
+            trend_tag = "COUNTER-TREND" if counter_trend else ("met 4H trend" if structure_4h == 'downtrend' else "4H neutraal")
             return Signal(
                 setup_type='continuation', side='sell',
                 entry=close, stop_loss=sl, tp1=tp1, tp2=tp2, tp3=tp3,
@@ -404,12 +423,13 @@ def check_rotation(candles, structure_4h: str = None, candles_5m: list = None) -
     """
     Rotation setup:
     - Volledige constructie vereist: L→H→HL→HH (bullish) of H→L→LH→LL (bearish)
-    - Na HH/LL: wacht op pullback naar het HL/LH-punt (vervalt na 10 candles)
+    - Na HH/LL: wacht op pullback naar het HL/LH-punt (vervalt na 15 candles)
     - Body filter: entry candle body ≥50% van totale range
     - Gain filter: close ≥0.15% voorbij het pullback-level
     - Met 4H trend → geen extra confirmatie candle nodig (limit-stijl entry op het level)
     - Tegen 4H trend → confirmatie candle verplicht (rejection of engulfing)
     - SL: 0.15% buiten het meest recente swing punt
+    - Volume: geen harde poort (telt mee in context score)
     """
     if len(candles) < 25:
         return None
@@ -429,64 +449,80 @@ def check_rotation(candles, structure_4h: str = None, candles_5m: list = None) -
         [Level(price=p, strength=2, type='resistance') for _, p in swing_highs[-4:]]
     )
 
-    avg_vol = avg_volume(candles, 20)
-    strong_volume = avg_vol == 0 or candles[-1][5] > avg_vol * 1.2
+    # NB: geen harde volume-poort meer — volume telt al voor 15 punten mee in de
+    # context score; dubbel eisen (poort én score) drukte de frequentie onnodig.
 
     # ── Bullish rotation: L → H → HL → HH compleet, entry op pullback naar HL ──
     construction = _full_reversal_structure(swing_highs, swing_lows, 'bullish')
     if construction:
         hh_age = n_prev - swing_highs[-1][0]  # candles geleden dat HH bevestigd werd
-        if hh_age <= 10:
-            pb = construction['pullback_level']
-            with_trend = (structure_4h == 'uptrend' or structure_4h is None)
-            confirm_ok = confirmation_candle(candles, 'bullish') if not with_trend else True
-            if (strong_volume and
-                    near_level(close, pb, 0.01) and
-                    close > open_ and
-                    has_strong_body(candles[-1]) and
-                    gains_level(close, pb, 'buy') and
-                    confirm_ok):
+        pb = construction['pullback_level']
+        if hh_age > 15:
+            _note(f"rotation bullish: constructie compleet maar HH is {hh_age} candles oud (max 15) — venster verlopen")
+        else:
+            # Confirmatie alleen verplicht bij ECHTE counter-trend (4H trendt tegen).
+            # 4H ranging/onbekend is neutraal — geen extra eis.
+            counter_trend = (structure_4h == 'downtrend')
+            checks = {
+                'pullback-zone (1.2% van HL)': near_level(close, pb, 0.012),
+                'bullish close': close > open_,
+                'body ≥50%': has_strong_body(candles[-1]),
+                'gain level (0.15%)': gains_level(close, pb, 'buy'),
+            }
+            if counter_trend:
+                checks['confirmatie-candle (counter-trend)'] = confirmation_candle(candles, 'bullish')
+            if all(checks.values()):
                 sl = low * 0.9985
                 sl_5m = _refine_sl_5m(candles_5m, 'buy')
                 if sl_5m and sl_5m > sl:
                     sl = sl_5m
                 if close - sl > 0:
                     tp1, tp2, tp3 = find_tp_levels(close, 'buy', key_levels_temp, candles)
-                    trend_tag = "met 4H trend" if with_trend else "COUNTER-TREND"
+                    trend_tag = "COUNTER-TREND" if counter_trend else ("met 4H trend" if structure_4h == 'uptrend' else "4H neutraal")
                     return Signal(
                         setup_type='rotation', side='buy',
                         entry=close, stop_loss=sl, tp1=tp1, tp2=tp2, tp3=tp3,
                         reason=f"Rotation bullish ({trend_tag}): L→H→HL→HH, pullback {pb:.0f}, HH {hh_age}c geleden",
                         confidence=0.78
                     )
+            else:
+                failed = [k for k, v in checks.items() if not v]
+                _note(f"rotation bullish: constructie OK (pullback {pb:.0f}), wacht op: {', '.join(failed)}")
 
     # ── Bearish rotation: H → L → LH → LL compleet, entry op pullback naar LH ──
     construction = _full_reversal_structure(swing_highs, swing_lows, 'bearish')
     if construction:
         ll_age = n_prev - swing_lows[-1][0]
-        if ll_age <= 10:
-            pb = construction['pullback_level']
-            with_trend = (structure_4h == 'downtrend' or structure_4h is None)
-            confirm_ok = confirmation_candle(candles, 'bearish') if not with_trend else True
-            if (strong_volume and
-                    near_level(close, pb, 0.01) and
-                    close < open_ and
-                    has_strong_body(candles[-1]) and
-                    gains_level(close, pb, 'sell') and
-                    confirm_ok):
+        pb = construction['pullback_level']
+        if ll_age > 15:
+            _note(f"rotation bearish: constructie compleet maar LL is {ll_age} candles oud (max 15) — venster verlopen")
+        else:
+            counter_trend = (structure_4h == 'uptrend')
+            checks = {
+                'pullback-zone (1.2% van LH)': near_level(close, pb, 0.012),
+                'bearish close': close < open_,
+                'body ≥50%': has_strong_body(candles[-1]),
+                'gain level (0.15%)': gains_level(close, pb, 'sell'),
+            }
+            if counter_trend:
+                checks['confirmatie-candle (counter-trend)'] = confirmation_candle(candles, 'bearish')
+            if all(checks.values()):
                 sl = high * 1.0015
                 sl_5m = _refine_sl_5m(candles_5m, 'sell')
                 if sl_5m and sl_5m < sl:
                     sl = sl_5m
                 if sl - close > 0:
                     tp1, tp2, tp3 = find_tp_levels(close, 'sell', key_levels_temp, candles)
-                    trend_tag = "met 4H trend" if with_trend else "COUNTER-TREND"
+                    trend_tag = "COUNTER-TREND" if counter_trend else ("met 4H trend" if structure_4h == 'downtrend' else "4H neutraal")
                     return Signal(
                         setup_type='rotation', side='sell',
                         entry=close, stop_loss=sl, tp1=tp1, tp2=tp2, tp3=tp3,
                         reason=f"Rotation bearish ({trend_tag}): H→L→LH→LL, pullback {pb:.0f}, LL {ll_age}c geleden",
                         confidence=0.78
                     )
+            else:
+                failed = [k for k, v in checks.items() if not v]
+                _note(f"rotation bearish: constructie OK (pullback {pb:.0f}), wacht op: {', '.join(failed)}")
     return None
 
 # ─── ATR Helper ───────────────────────────────────────────────────────────────
@@ -633,12 +669,20 @@ def analyze(candles_15m: list, candles_1h: list, cooldown_candles: int = 0,
     candles_30m / candles_1m: secundaire timeframes (daytrade: 15m+30m, scalp: 5m+1m).
     scalp_mode: tightere SL (1.0×ATR op 5m), TP1=0.8R, TP2=1.5R.
     """
+    global _analysis_notes, _last_analysis
+    _analysis_notes = []
+    mode_key = 'scalp' if scalp_mode else 'daytrade'
+
     if len(candles_15m) < 30 or len(candles_1h) < 20:
         logger.warning("Niet genoeg candles voor analyse")
+        _last_analysis = {'mode': mode_key, 'result': 'te weinig candles', 'notes': []}
         return None
 
     # Cooldown na SL: geen nieuwe entry tot min_cooldown_candles bereikt is
     if cooldown_candles > 0 and cooldown_candles < min_cooldown_candles:
+        _last_analysis = {'mode': mode_key,
+                          'result': f'SL-cooldown actief ({cooldown_candles}/{min_cooldown_candles} candles)',
+                          'notes': []}
         return None
 
     # Session info (voor logging en signaal metadata — filter niet meer actief)
@@ -659,6 +703,16 @@ def analyze(candles_15m: list, candles_1h: list, cooldown_candles: int = 0,
         f"{mode_label} Structuur 4h: {structure_4h or '—'} | 1h: {structure_1h} | 15m: {structure_15m}"
         f" | Sessie: {session_name}"
     )
+
+    # Diagnostiek-object: wordt gevuld bij elk eindpunt van deze functie
+    info = {
+        'mode': mode_key,
+        'ts': now.strftime('%Y-%m-%dT%H:%M:%SZ'),
+        'structuur': {'4h': structure_4h or 'onbekend', 'context': structure_1h, 'entry': structure_15m},
+        'result': None,
+        'notes': [],
+    }
+    _last_analysis = info
 
     # Check setups in volgorde van prioriteit (sla uitgeschakelde setups over)
     off = set(disabled_setups or [])
@@ -748,11 +802,15 @@ def analyze(candles_15m: list, candles_1h: list, cooldown_candles: int = 0,
             else:
                 signal.tp1, signal.tp2, signal.tp3 = tps[2], tps[1], tps[0]
 
-            # R:R valideren op tp3 (na SL-correctie) — alleen voor trades mét de 4h trend
+            # R:R valideren op tp3 (na SL-correctie). Minimaal 2.0 — was 2.5,
+            # maar in combinatie met de SL-vergroting naar 1.5× ATR sneuvelden
+            # daar te veel geldige setups op.
             reward = abs(signal.tp3 - signal.entry)
             rr = reward / risk if risk > 0 else 0
-            if rr < 2.5:
+            if rr < 2.0:
                 logger.info(f"Signal afgewezen: R:R te laag ({rr:.1f})")
+                info['result'] = f"setup gevonden ({signal.setup_type} {signal.side}) maar afgewezen: R:R {rr:.1f} < 2.0"
+                info['notes'] = list(_analysis_notes)
                 return None
 
         # Context score — counter-trend trades hebben een hogere drempel nodig.
@@ -786,6 +844,10 @@ def analyze(candles_15m: list, candles_1h: list, cooldown_candles: int = 0,
                 f"Signal afgewezen: context score te laag ({ctx['score']}/{min_score} vereist"
                 f"{' — counter-trend' if is_counter_trend else ''})"
             )
+            info['result'] = (f"setup gevonden ({signal.setup_type} {signal.side}) maar afgewezen: "
+                              f"score {ctx['score']} < {min_score}")
+            info['score_breakdown'] = ctx['breakdown']
+            info['notes'] = list(_analysis_notes)
             return None
         signal.context_score = ctx['score']
         signal.context_breakdown = ctx['breakdown']
@@ -802,5 +864,11 @@ def analyze(candles_15m: list, candles_1h: list, cooldown_candles: int = 0,
             f"{signal.reason} | R:R={rr:.1f} | sessie={session_name} | "
             f"score={ctx['score']}/{min_score} | geldig tot {signal.valid_until}"
         )
+        info['result'] = (f"SIGNAAL: {signal.setup_type} {signal.side.upper()} ({timeframe_used}) | "
+                          f"score {ctx['score']}/{min_score} | R:R {rr:.1f}")
+        info['notes'] = list(_analysis_notes)
+    else:
+        info['result'] = 'geen setup gevonden'
+        info['notes'] = list(_analysis_notes)
 
     return signal
