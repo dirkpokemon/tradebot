@@ -146,18 +146,41 @@ def get_stats():
     }
 
 
+# Gecachete publieke exchange voor /candles — voorkomt dat elke poll (15s)
+# opnieuw de volledige OKX-marktlijst laadt (traag + rate-limit gevoelig).
+_public_exchange = None
+
+def _cached_public_exchange():
+    global _public_exchange
+    if _public_exchange is None:
+        _public_exchange = get_public_exchange()
+    return _public_exchange
+
+
 @app.get("/candles")
 def get_live_candles(timeframe: str = "15m", limit: int = 150):
-    try:
-        exchange = get_public_exchange()
-        symbol = state.symbol if state.symbol else "BTC/USDT:USDT"
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-        return [
-            {"time": int(c[0] / 1000), "open": c[1], "high": c[2], "low": c[3], "close": c[4], "volume": c[5]}
-            for c in ohlcv
-        ]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    global _public_exchange
+    # Probeer meerdere symboolvarianten: het geconfigureerde symbool kan een
+    # spot-naam zijn uit een oude dashboard-config terwijl de bot perpetual draait.
+    candidates = list(dict.fromkeys([
+        state.symbol or "BTC/USDT:USDT",
+        "BTC/USDT:USDT",
+        "BTC/USDT",
+    ]))
+    last_err = None
+    for symbol in candidates:
+        try:
+            exchange = _cached_public_exchange()
+            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+            return [
+                {"time": int(c[0] / 1000), "open": c[1], "high": c[2], "low": c[3], "close": c[4], "volume": c[5]}
+                for c in ohlcv
+            ]
+        except Exception as e:
+            last_err = e
+            # Bij een verbindingsprobleem kan de gecachete instantie corrupt zijn — reset
+            _public_exchange = None
+    raise HTTPException(status_code=500, detail=f"candles mislukt ({' / '.join(candidates)}): {last_err}")
 
 
 @app.get("/trades")
