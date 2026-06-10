@@ -146,41 +146,50 @@ def get_stats():
     }
 
 
-# Gecachete publieke exchange voor /candles — voorkomt dat elke poll (15s)
-# opnieuw de volledige OKX-marktlijst laadt (traag + rate-limit gevoelig).
-_public_exchange = None
+_TF_OKX = {"1m":"1m","5m":"5m","15m":"15m","30m":"30m","1h":"1H","4h":"4H","1d":"1D"}
+_TF_BINANCE = {"1m":"1m","5m":"5m","15m":"15m","30m":"30m","1h":"1h","4h":"4h","1d":"1d"}
 
-def _cached_public_exchange():
-    global _public_exchange
-    if _public_exchange is None:
-        _public_exchange = get_public_exchange()
-    return _public_exchange
+
+def _candles_okx(timeframe: str, limit: int) -> list:
+    """Directe OKX REST-aanroep — geen ccxt marktlijst nodig."""
+    bar = _TF_OKX.get(timeframe, timeframe)
+    url = f"https://www.okx.com/api/v5/market/candles?instId=BTC-USDT-SWAP&bar={bar}&limit={limit}"
+    r = requests.get(url, timeout=8)
+    r.raise_for_status()
+    data = r.json()
+    if data.get("code") != "0":
+        raise ValueError(f"OKX API fout: {data.get('msg', data)}")
+    rows = data["data"]  # nieuwste eerst → omdraaien
+    return [
+        {"time": int(row[0]) // 1000, "open": float(row[1]), "high": float(row[2]),
+         "low": float(row[3]), "close": float(row[4]), "volume": float(row[5])}
+        for row in reversed(rows)
+    ]
+
+
+def _candles_binance(timeframe: str, limit: int) -> list:
+    """Binance futures als fallback — altijd publiek beschikbaar."""
+    interval = _TF_BINANCE.get(timeframe, timeframe)
+    url = f"https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval={interval}&limit={limit}"
+    r = requests.get(url, timeout=8)
+    r.raise_for_status()
+    rows = r.json()
+    return [
+        {"time": int(row[0]) // 1000, "open": float(row[1]), "high": float(row[2]),
+         "low": float(row[3]), "close": float(row[4]), "volume": float(row[5])}
+        for row in rows
+    ]
 
 
 @app.get("/candles")
 def get_live_candles(timeframe: str = "15m", limit: int = 150):
-    global _public_exchange
-    # Probeer meerdere symboolvarianten: het geconfigureerde symbool kan een
-    # spot-naam zijn uit een oude dashboard-config terwijl de bot perpetual draait.
-    candidates = list(dict.fromkeys([
-        state.symbol or "BTC/USDT:USDT",
-        "BTC/USDT:USDT",
-        "BTC/USDT",
-    ]))
     last_err = None
-    for symbol in candidates:
+    for fn in [_candles_okx, _candles_binance]:
         try:
-            exchange = _cached_public_exchange()
-            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-            return [
-                {"time": int(c[0] / 1000), "open": c[1], "high": c[2], "low": c[3], "close": c[4], "volume": c[5]}
-                for c in ohlcv
-            ]
+            return fn(timeframe, limit)
         except Exception as e:
             last_err = e
-            # Bij een verbindingsprobleem kan de gecachete instantie corrupt zijn — reset
-            _public_exchange = None
-    raise HTTPException(status_code=500, detail=f"candles mislukt ({' / '.join(candidates)}): {last_err}")
+    raise HTTPException(status_code=500, detail=f"candles mislukt: {last_err}")
 
 
 @app.get("/trades")
