@@ -180,7 +180,9 @@ def place_order(exchange, symbol: str, signal: Signal, qty: float, candles_15m: 
         save_trade(asdict(trade))
         if candles_15m:
             from db import save_candle_snapshot
-            save_candle_snapshot(trade.id, candles_15m[-100:], entry_ts=candles_15m[-1][0])
+            # [-2] = laatste gesloten candle (trigger voor de entry); [-1] is de forming candle
+            entry_ts = candles_15m[-2][0] if len(candles_15m) >= 2 else candles_15m[-1][0]
+            save_candle_snapshot(trade.id, candles_15m[-100:], entry_ts=entry_ts)
         return trade
     else:
         try:
@@ -217,7 +219,8 @@ def place_order(exchange, symbol: str, signal: Signal, qty: float, candles_15m: 
             save_trade(asdict(trade))
             if candles_15m:
                 from db import save_candle_snapshot
-                save_candle_snapshot(trade.id, candles_15m[-100:], entry_ts=candles_15m[-1][0])
+                entry_ts = candles_15m[-2][0] if len(candles_15m) >= 2 else candles_15m[-1][0]
+                save_candle_snapshot(trade.id, candles_15m[-100:], entry_ts=entry_ts)
             return trade
         except Exception as e:
             logger.error(f"Order mislukt: {e}")
