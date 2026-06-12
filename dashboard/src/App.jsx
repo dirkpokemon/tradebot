@@ -780,73 +780,73 @@ function CandleChart({ candles, entry, sl, tp1, tp2, tp3, side, entryTs }) {
   if (!candles || candles.length === 0) return <EmptyState icon="📊" text="Geen candle data opgeslagen" sub="Trades die na deze update zijn geopend bevatten een snapshot" height={140} />;
 
   const W = 680, H = 360;
-  const PAD = { top: 20, right: 62, bottom: 24, left: 8 };
+  const PAD = { top: 24, right: 66, bottom: 20, left: 8 };
   const plotW = W - PAD.left - PAD.right;
   const plotH = H - PAD.top - PAD.bottom;
 
-  // Maximaal 50 candles weergeven — 100 candles zijn op mobiel onzichtbaar smal
+  // Laatste 50 candles (breder dan 100 op mobiel)
   const visible = candles.slice(-50);
   const entryIdx = entryTs != null ? visible.findIndex(c => c[0] === entryTs) : -1;
 
-  // Y-schaal gefocust op de trade-zone: entry ± 4× risk (niet de volledige candlerange)
-  const risk = entry && sl ? Math.abs(entry - sl) : 0;
-  const levels = [entry, sl, tp1, tp2, tp3].filter(Boolean);
-  const mid = levels.length ? (Math.min(...levels) + Math.max(...levels)) / 2 : (entry || 0);
-  const focus = risk > 0 ? risk * 4.5 : mid * 0.012;
-  const rawMin = mid - focus;
-  const rawMax = mid + focus;
-  // Clamp zodat candles die buiten de zone vallen de schaal niet oprekken
-  const candleMin = Math.min(...visible.map(c => c[3]));
-  const candleMax = Math.max(...visible.map(c => c[2]));
-  const minP = Math.max(candleMin, rawMin);
-  const maxP = Math.min(candleMax, rawMax);
+  // Y-range: begin altijd vanuit de candlerange zodat er sowieso iets te zien is
+  const candleLows  = visible.map(c => c[3]);
+  const candleHighs = visible.map(c => c[2]);
+  let minP = Math.min(...candleLows);
+  let maxP = Math.max(...candleHighs);
+  // Voeg handels-levels toe als ze binnen 10% van de candlerange vallen
+  const span0 = maxP - minP || 1;
+  const tradeLevels = [entry, sl, tp1, tp2, tp3]
+    .filter(p => p > 0 && p > minP - span0 && p < maxP + span0);
+  if (tradeLevels.length) {
+    minP = Math.min(minP, ...tradeLevels);
+    maxP = Math.max(maxP, ...tradeLevels);
+  }
+  const pad5 = (maxP - minP) * 0.05;
+  minP -= pad5; maxP += pad5;
   const span = maxP - minP || 1;
 
-  const clip = (p) => Math.max(minP, Math.min(maxP, p));
   const xScale = (i) => PAD.left + (i + 0.5) * (plotW / visible.length);
-  const yScale = (p) => PAD.top + plotH - ((clip(p) - minP) / span) * plotH;
+  const yScale = (p) => PAD.top + plotH - ((p - minP) / span) * plotH;
   const cw = Math.max(2, plotW / visible.length - 2);
 
-  // Horizontale prijs-gridlines (5 stappen)
-  const gridPrices = Array.from({ length: 5 }, (_, i) => minP + (i + 0.5) * span / 5);
-
   const lines = [
-    { p: entry, color: "#ffffff", label: "ENTRY", dash: "none",  w: 1.2 },
-    { p: sl,    color: "#e63946", label: "SL",    dash: "5 3",   w: 1.0 },
-    { p: tp1,   color: "#00b37e", label: "TP1",   dash: "4 3",   w: 0.8 },
-    { p: tp2,   color: "#00b37e", label: "TP2",   dash: "4 3",   w: 0.8 },
-    { p: tp3,   color: "#00b37e", label: "TP3",   dash: "4 3",   w: 0.8 },
-  ].filter(l => l.p != null && l.p >= minP && l.p <= maxP);
+    { p: entry, color: "#ffffff", label: "ENTRY", dash: "none" },
+    { p: sl,    color: "#ef5350", label: "SL",    dash: "5 3"  },
+    { p: tp1,   color: "#26a69a", label: "TP1",   dash: "4 3"  },
+    { p: tp2,   color: "#26a69a", label: "TP2",   dash: "4 3"  },
+    { p: tp3,   color: "#26a69a", label: "TP3",   dash: "4 3"  },
+  ].filter(l => l.p > 0);
 
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", background: "#13151f", borderRadius: 8, display: "block" }}>
-      {/* Subtiele gridlines */}
-      {gridPrices.map((p, i) => (
-        <line key={i} x1={PAD.left} x2={W - PAD.right} y1={yScale(p)} y2={yScale(p)}
-          stroke="#ffffff" strokeWidth={0.3} opacity={0.08} />
-      ))}
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", background: "#131722", borderRadius: 8, display: "block" }}>
 
-      {/* Entry candle achtergrond highlight */}
-      {entryIdx >= 0 && (
-        <rect x={xScale(entryIdx) - cw / 2 - 2} y={PAD.top}
-          width={cw + 4} height={plotH} fill="#ffffff" opacity={0.06} />
-      )}
-      {entryIdx >= 0 && (
-        <line x1={xScale(entryIdx)} x2={xScale(entryIdx)}
-          y1={PAD.top} y2={PAD.top + plotH}
-          stroke="#ffffff" strokeWidth={0.7} strokeDasharray="3 3" opacity={0.35} />
-      )}
+      {/* Candles éérst — zodat prijslijnen er bovenop staan */}
+      {visible.map((c, i) => {
+        const [, open, high, low, close] = c;
+        const bull = close >= open;
+        const col  = bull ? "#26a69a" : "#ef5350";
+        const x    = xScale(i);
+        const bodyTop = Math.min(yScale(open), yScale(close));
+        const bodyH   = Math.max(1.5, Math.abs(yScale(open) - yScale(close)));
+        return (
+          <g key={i}>
+            <line x1={x} x2={x} y1={yScale(high)} y2={yScale(low)}
+              stroke={col} strokeWidth={1} />
+            <rect x={x - cw / 2} y={bodyTop} width={cw} height={bodyH}
+              fill={col} />
+          </g>
+        );
+      })}
 
       {/* Prijslijnen: ENTRY, SL, TP1-3 */}
-      {lines.map(({ p, color, label, dash, w }) => {
+      {lines.map(({ p, color, label, dash }) => {
         const y = yScale(p);
         return (
           <g key={label}>
             <line x1={PAD.left} x2={W - PAD.right} y1={y} y2={y}
-              stroke={color} strokeWidth={w} strokeDasharray={dash} opacity={0.9} />
-            <rect x={W - PAD.right + 1} y={y - 7} width={58} height={13}
-              fill={color} opacity={0.18} rx={2} />
-            <text x={W - PAD.right + 4} y={y + 3.5} fill={color} fontSize={7.5}
+              stroke={color} strokeWidth={label === "ENTRY" ? 1.4 : 1}
+              strokeDasharray={dash} opacity={0.95} />
+            <text x={W - PAD.right + 4} y={y + 4} fill={color} fontSize={8}
               fontFamily="monospace" fontWeight="700">
               {label} {Math.round(p)}
             </text>
@@ -854,31 +854,16 @@ function CandleChart({ candles, entry, sl, tp1, tp2, tp3, side, entryTs }) {
         );
       })}
 
-      {/* Entry candle tijdlabel */}
+      {/* Entry candle verticale markering */}
       {entryIdx >= 0 && (
-        <text x={xScale(entryIdx)} y={PAD.top - 5} fill="#ffffff" fontSize={7}
-          fontFamily="monospace" textAnchor="middle" opacity={0.5}>▼ entry</text>
+        <>
+          <line x1={xScale(entryIdx)} x2={xScale(entryIdx)}
+            y1={PAD.top} y2={PAD.top + plotH}
+            stroke="#ffffff" strokeWidth={0.8} strokeDasharray="3 3" opacity={0.35} />
+          <text x={xScale(entryIdx)} y={PAD.top - 7} fill="#ffffff" fontSize={9}
+            fontFamily="monospace" textAnchor="middle" opacity={0.7}>▼</text>
+        </>
       )}
-
-      {/* Candles */}
-      {visible.map((c, i) => {
-        const [, open, high, low, close] = c;
-        const bull = close >= open;
-        const col = bull ? "#26a69a" : "#ef5350";
-        const x = xScale(i);
-        const bodyTop = Math.min(yScale(open), yScale(close));
-        const bodyH   = Math.max(1, Math.abs(yScale(open) - yScale(close)));
-        const wickTop    = yScale(Math.min(high, maxP));
-        const wickBottom = yScale(Math.max(low, minP));
-        return (
-          <g key={i}>
-            <line x1={x} x2={x} y1={wickTop} y2={wickBottom}
-              stroke={col} strokeWidth={1} opacity={0.9} />
-            <rect x={x - cw / 2} y={bodyTop} width={cw} height={bodyH}
-              fill={col} opacity={0.9} />
-          </g>
-        );
-      })}
     </svg>
   );
 }
