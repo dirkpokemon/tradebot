@@ -219,7 +219,7 @@ def get_candles_for_trade(trade_id: str):
 
 @app.post("/trades/{trade_id}/review")
 def post_review(trade_id: str, req: ReviewRequest):
-    valid = {"good_entry", "too_early", "wrong_setup", "bad_rr", "false_signal"}
+    valid = {"good_entry", "too_early", "wrong_setup", "bad_rr", "false_signal", "good", "marginal", "bad"}
     if req.label not in valid:
         raise HTTPException(status_code=400, detail=f"Ongeldig label. Kies uit: {valid}")
     save_review(trade_id, req.label, req.note)
