@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import LiveCandleChart from "./LiveCandleChart";
+import SnapshotChart from "./SnapshotChart";
 import {
   AreaChart, Area,
   BarChart, Bar,
@@ -947,8 +948,8 @@ function TradeReviewModal({ trade, onClose, onSaved }) {
         {/* Candle chart */}
         <div style={{ marginBottom: 18 }}>
           {loadingC
-            ? <div style={{ height: 120, display: "flex", alignItems: "center", justifyContent: "center", color: C.muted, fontSize: 11 }}>Candles laden…</div>
-            : <CandleChart candles={candles} entry={trade.entry_price} sl={trade.stop_loss} tp1={trade.tp1} tp2={trade.tp2} tp3={trade.tp3} side={trade.side} entryTs={entryTs} />
+            ? <div style={{ height: 120, display: "flex", alignItems: "center", justifyContent: "center", background: "#131722", borderRadius: 8, color: "#8b92a5", fontSize: 11 }}>Candles laden…</div>
+            : <SnapshotChart candles={candles} entry={trade.entry_price} sl={trade.stop_loss} tp1={trade.tp1} tp2={trade.tp2} tp3={trade.tp3} side={trade.side} entryTs={entryTs} />
           }
         </div>
 
