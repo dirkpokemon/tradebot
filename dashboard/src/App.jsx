@@ -903,6 +903,7 @@ function TradeReviewModal({ trade, onClose, onSaved }) {
   const [reasons,   setReasons]   = useState(new Set());
   const [noteText,  setNoteText]  = useState(trade.review_note || "");
   const [saving,    setSaving]    = useState(false);
+  const [saveErr,   setSaveErr]   = useState(null);
 
   function toggleReason(r) {
     setReasons(prev => {
@@ -915,18 +916,28 @@ function TradeReviewModal({ trade, onClose, onSaved }) {
   async function saveReview() {
     if (!rating) return;
     setSaving(true);
+    setSaveErr(null);
     const parts = [];
     if (reasons.size > 0) parts.push([...reasons].join(", "));
     if (noteText.trim()) parts.push(noteText.trim());
     const note = parts.join("\n");
-    await fetch(`${API_URL}/trades/${trade.id}/review`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ label: rating, note }),
-    });
-    setSaving(false);
-    onSaved(trade.id, rating, note);
-    onClose();
+    try {
+      const res = await fetch(`${API_URL}/trades/${trade.id}/review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label: rating, note }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || `HTTP ${res.status}`);
+      }
+      onSaved(trade.id, rating, note);
+      onClose();
+    } catch (e) {
+      setSaveErr(e.message || "Opslaan mislukt");
+    } finally {
+      setSaving(false);
+    }
   }
 
   const isLong  = trade.side === "buy";
@@ -1138,6 +1149,11 @@ function TradeReviewModal({ trade, onClose, onSaved }) {
               }}
             />
 
+            {saveErr && (
+              <div style={{ color: C.red, fontSize: 11, fontWeight: 600, marginBottom: 8, padding: "6px 10px", background: C.redBg, borderRadius: 6 }}>
+                ⚠ {saveErr}
+              </div>
+            )}
             <button className="btn-primary" onClick={saveReview} disabled={saving} style={{ width: "100%", padding: "12px", fontSize: 13, borderRadius: 10 }}>
               {saving ? "Opslaan…" : "Opslaan"}
             </button>
