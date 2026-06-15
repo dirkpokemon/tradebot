@@ -223,6 +223,12 @@ def post_review(trade_id: str, req: ReviewRequest):
     if req.label not in valid:
         raise HTTPException(status_code=400, detail=f"Ongeldig label. Kies uit: {valid}")
     save_review(trade_id, req.label, req.note)
+    # Also update the in-memory trade so the next /status poll reflects the review
+    for t in state.trades:
+        if t.id == trade_id:
+            t.review_label = req.label
+            t.review_note  = req.note
+            break
     return {"message": "Review opgeslagen", "trade_id": trade_id, "label": req.label}
 
 @app.get("/reviews/summary")
