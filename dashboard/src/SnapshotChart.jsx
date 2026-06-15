@@ -10,15 +10,11 @@ const THEME = {
   border: "#2a2d3e",
   green:  "#26a69a",
   red:    "#ef5350",
+  yellow: "#f59f00",
 };
 
 const TF_OPTIONS = ["5m", "15m", "1h", "4h"];
 
-/**
- * Grafiek in het trade-review modal.
- * Laadt LIVE candles (betrouwbaar), markeert de entry-prijs en toont SL/TP-lijnen.
- * Snapshot-data (entryTs) wordt gebruikt om de juiste positie in de chart te vinden.
- */
 export default function SnapshotChart({ trade }) {
   const containerRef  = useRef(null);
   const chartRef      = useRef(null);
@@ -29,47 +25,81 @@ export default function SnapshotChart({ trade }) {
   const [tf, setTf]         = useState("15m");
   const [error, setError]   = useState(null);
   const [loading, setLoading] = useState(true);
+  const [source, setSource] = useState(null); // "snapshot" | "live"
 
   const drawChart = useCallback(async () => {
     if (!seriesRef.current) return;
+    setLoading(true);
+    setError(null);
+
     try {
-      const res = await fetch(`${API_URL}/candles?timeframe=${tf}&limit=200`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const candles = await res.json();
-      if (!candles.length) return;
+      let candles = null;
+      let entryTs = trade.timestamp
+        ? Math.floor(new Date(trade.timestamp).getTime() / 1000)
+        : null;
+
+      // For 15m: try stored snapshot first (shows actual market context at trade time)
+      if (tf === "15m" && trade.id) {
+        try {
+          const snapRes = await fetch(`${API_URL}/trades/${trade.id}/candles`);
+          if (snapRes.ok) {
+            const snap = await snapRes.json();
+            if (snap.candles && snap.candles.length >= 20) {
+              candles = snap.candles.map(c => ({
+                time: c[0], open: c[1], high: c[2], low: c[3], close: c[4],
+              }));
+              if (snap.entry_ts) entryTs = snap.entry_ts;
+              setSource("snapshot");
+            }
+          }
+        } catch { /* fall through to live */ }
+      }
+
+      // Fall back to live candles
+      if (!candles) {
+        const res = await fetch(`${API_URL}/candles?timeframe=${tf}&limit=300`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        candles = await res.json();
+        setSource("live");
+      }
+
+      if (!candles.length) throw new Error("Geen candles beschikbaar");
 
       seriesRef.current.setData(candles);
-      setError(null);
 
-      // Verwijder oude price lines
+      // Remove old price lines
       priceLinesRef.current.forEach(pl => {
         try { seriesRef.current.removePriceLine(pl); } catch { /* */ }
       });
       priceLinesRef.current = [];
 
-      // Teken entry/SL/TP-lijnen
-      const addLine = (price, color, title, style = 2) => {
+      const addLine = (price, color, title, style = 2, width = 1) => {
         if (!price || price <= 0) return;
         priceLinesRef.current.push(
           seriesRef.current.createPriceLine({
-            price, color, lineWidth: 1, lineStyle: style,
+            price, color, lineWidth: width, lineStyle: style,
             axisLabelVisible: true, title,
           })
         );
       };
-      addLine(trade.entry_price, "#ffffff",    "entry",  0);
-      addLine(trade.stop_loss,   THEME.red,    "SL");
-      addLine(trade.tp1,         THEME.green,  "TP1");
-      addLine(trade.tp2,         THEME.green,  "TP2");
-      addLine(trade.tp3,         THEME.green,  "TP3");
-      if (trade.exit_price) addLine(trade.exit_price, "#f59f00", "exit");
 
-      // Entry-marker: zoek de candle die het dichtst bij de entry-tijd ligt
-      if (trade.timestamp) {
-        const entryUnix = Math.floor(new Date(trade.timestamp).getTime() / 1000);
-        // Zoek de candle die het dichtst bij de entry timestamp ligt
+      // Entry line (solid white, thicker)
+      addLine(trade.entry_price, "#ffffff", "Entry", 0, 2);
+      // SL
+      addLine(trade.stop_loss, THEME.red, "SL");
+      // TPs — brighter + checkmark when hit
+      addLine(trade.tp1, trade.tp1_hit ? "#00e5b5" : THEME.green, trade.tp1_hit ? "TP1 ✓" : "TP1");
+      addLine(trade.tp2, trade.tp2_hit ? "#00e5b5" : THEME.green, trade.tp2_hit ? "TP2 ✓" : "TP2");
+      addLine(trade.tp3, trade.tp3_hit ? "#00e5b5" : THEME.green, trade.tp3_hit ? "TP3 ✓" : "TP3");
+      // Exit price (orange, solid)
+      if (trade.exit_price && trade.exit_price !== trade.entry_price) {
+        addLine(trade.exit_price, THEME.yellow, "Exit", 0, 1.5);
+      }
+
+      // Entry marker arrow
+      if (entryTs) {
         const closest = candles.reduce((best, c) =>
-          Math.abs(c.time - entryUnix) < Math.abs(best.time - entryUnix) ? c : best
+          Math.abs(c.time - entryTs) < Math.abs(best.time - entryTs) ? c : best
         , candles[0]);
 
         if (markersRef.current) { markersRef.current.detach(); markersRef.current = null; }
@@ -78,14 +108,15 @@ export default function SnapshotChart({ trade }) {
           position: trade.side === "buy" ? "belowBar" : "aboveBar",
           shape:    trade.side === "buy" ? "arrowUp"  : "arrowDown",
           color:    trade.side === "buy" ? THEME.green : THEME.red,
-          text:     `Entry ${Math.round(trade.entry_price)}`,
+          size:     2,
+          text:     trade.side === "buy" ? "▲ LONG" : "▼ SHORT",
         }]);
 
-        // Zoom: toon 20 candles voor de entry tot 10 erna
-        const idx = candles.findIndex(c => c.time >= entryUnix - 30);
+        // Show 40 candles before entry + 60 after = full setup context visible
+        const idx = candles.findIndex(c => c.time >= entryTs);
         if (idx >= 0) {
-          const from = candles[Math.max(0, idx - 5)].time;
-          const to   = candles[Math.min(candles.length - 1, idx + 30)].time;
+          const from = candles[Math.max(0, idx - 40)].time;
+          const to   = candles[Math.min(candles.length - 1, idx + 60)].time;
           chartRef.current?.timeScale().setVisibleRange({ from, to });
         } else {
           chartRef.current?.timeScale().fitContent();
@@ -99,7 +130,7 @@ export default function SnapshotChart({ trade }) {
     setLoading(false);
   }, [tf, trade]);
 
-  // Chart aanmaken (eenmalig)
+  // Create chart once
   useEffect(() => {
     if (!containerRef.current) return;
     const chart = createChart(containerRef.current, {
@@ -109,7 +140,7 @@ export default function SnapshotChart({ trade }) {
       rightPriceScale: { borderColor: THEME.border },
       timeScale: { borderColor: THEME.border, timeVisible: true, secondsVisible: false },
       width:  containerRef.current.clientWidth,
-      height: 260,
+      height: 300,
     });
     const series = chart.addSeries(CandlestickSeries, {
       upColor:         THEME.green, downColor:       THEME.red,
@@ -131,37 +162,41 @@ export default function SnapshotChart({ trade }) {
   }, []);
 
   useEffect(() => {
-    setLoading(true);
     drawChart();
   }, [drawChart]);
 
   return (
     <div style={{ position: "relative" }}>
-      {/* Timeframe knoppen */}
-      <div style={{ display: "flex", gap: 4, marginBottom: 8, justifyContent: "flex-end" }}>
-        {TF_OPTIONS.map(t => (
-          <button key={t} onClick={() => setTf(t)} style={{
-            padding: "3px 8px", borderRadius: 5, border: "1px solid",
-            fontSize: 9, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
-            background:  t === tf ? "#3b5bdb" : "#f0f2f7",
-            color:       t === tf ? "#fff"    : "#8b92a5",
-            borderColor: t === tf ? "#3b5bdb" : "#e2e5ef",
-          }}>{t.toUpperCase()}</button>
-        ))}
+      {/* Timeframe buttons + source label */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+        <span style={{ fontSize: 9, fontWeight: 600, color: source === "snapshot" ? "#26a69a" : "#8b92a5" }}>
+          {source === "snapshot" ? "📸 Opgeslagen candles (trade-moment)" : source === "live" ? "⚡ Live candles" : ""}
+        </span>
+        <div style={{ display: "flex", gap: 4 }}>
+          {TF_OPTIONS.map(t => (
+            <button key={t} onClick={() => setTf(t)} style={{
+              padding: "3px 8px", borderRadius: 5, border: "1px solid",
+              fontSize: 9, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+              background:  t === tf ? "#3b5bdb" : "#f0f2f7",
+              color:       t === tf ? "#fff"    : "#8b92a5",
+              borderColor: t === tf ? "#3b5bdb" : "#e2e5ef",
+            }}>{t.toUpperCase()}</button>
+          ))}
+        </div>
       </div>
 
       <div ref={containerRef} style={{ borderRadius: 8, overflow: "hidden" }} />
 
       {loading && (
         <div style={{
-          position: "absolute", inset: "32px 0 0 0",
+          position: "absolute", inset: "30px 0 0 0",
           display: "flex", alignItems: "center", justifyContent: "center",
           background: "rgba(19,23,34,0.7)", borderRadius: 8, fontSize: 11, color: "#8b92a5",
         }}>Candles laden…</div>
       )}
       {error && (
         <div style={{
-          position: "absolute", inset: "32px 0 0 0",
+          position: "absolute", inset: "30px 0 0 0",
           display: "flex", alignItems: "center", justifyContent: "center",
           background: "rgba(19,23,34,0.9)", borderRadius: 8,
           fontSize: 11, color: THEME.red, fontWeight: 600,
