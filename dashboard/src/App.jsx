@@ -931,9 +931,23 @@ function TradeReviewModal({ trade, onClose, onSaved }) {
 
   const isLong  = trade.side === "buy";
   const pnlPos  = trade.realized_pnl >= 0;
-  const rr      = trade.entry_price && trade.stop_loss && trade.tp3
-    ? Math.abs((trade.tp3 - trade.entry_price) / (trade.entry_price - trade.stop_loss)).toFixed(1)
+  const slDist  = trade.entry_price && trade.stop_loss
+    ? Math.abs((trade.entry_price - trade.stop_loss) / trade.entry_price * 100)
     : null;
+  const riskPts = trade.entry_price && trade.stop_loss
+    ? Math.abs(trade.entry_price - trade.stop_loss)
+    : null;
+
+  function tpRR(tp) {
+    if (!tp || !riskPts || riskPts === 0) return null;
+    return (Math.abs(tp - trade.entry_price) / riskPts).toFixed(1);
+  }
+  function tpPct(tp) {
+    if (!tp || !trade.entry_price) return null;
+    return ((tp - trade.entry_price) / trade.entry_price * 100 * (isLong ? 1 : -1)).toFixed(2);
+  }
+
+  const scoreColor = trade.context_score >= 70 ? C.green : trade.context_score >= 50 ? C.yellow : C.red;
 
   return (
     <div style={{
@@ -942,52 +956,127 @@ function TradeReviewModal({ trade, onClose, onSaved }) {
       padding: "12px 12px", overflowY: "auto",
     }} onClick={onClose}>
       <div style={{
-        background: C.card, borderRadius: 16, padding: 20, maxWidth: 780, width: "100%",
+        background: C.card, borderRadius: 16, padding: 20, maxWidth: 820, width: "100%",
         boxShadow: "0 24px 64px rgba(0,0,0,0.35)", marginTop: 8,
       }} onClick={e => e.stopPropagation()}>
 
         {/* Header row */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <span style={{ fontSize: 15, fontWeight: 800, color: isLong ? C.green : C.red }}>
+            <span style={{ fontSize: 16, fontWeight: 900, color: isLong ? C.green : C.red }}>
               {isLong ? "▲ LONG" : "▼ SHORT"}
             </span>
-            <Tag color={C.blue} bg={C.blueBg}>{trade.setup_type?.replace("_", " ")}</Tag>
+            <Tag color={C.blue} bg={C.blueBg}>{trade.setup_type?.replace(/_/g, " ")}</Tag>
             {trade.trade_mode && (
               <Tag color={trade.trade_mode === "scalp" ? C.orange : C.muted} bg={trade.trade_mode === "scalp" ? "#fff3ec" : "#f5f6fa"}>
                 {trade.trade_mode.toUpperCase()}
               </Tag>
             )}
+            <span style={{ fontSize: 10, color: C.muted }}>{trade.timestamp?.slice(0, 16).replace("T", " ")}</span>
           </div>
           <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 20, cursor: "pointer", color: C.muted, lineHeight: 1, padding: "0 4px" }}>✕</button>
         </div>
 
-        {/* Key numbers row */}
-        <div style={{
-          display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 14,
-          background: C.bg, borderRadius: 10, padding: "10px 12px",
-        }}>
-          {[
-            { label: "Entry",  value: fmtP(trade.entry_price) },
-            { label: "Exit",   value: fmtP(trade.exit_price) || "—" },
-            { label: "PnL",    value: `${pnlPos ? "+" : ""}${fmt(trade.realized_pnl)} $`, color: pnlPos ? C.green : C.red },
-            { label: "R:R",    value: rr ? `${rr}R` : "—" },
-          ].map(({ label, value, color }) => (
-            <div key={label} style={{ textAlign: "center" }}>
-              <div style={{ fontSize: 9, color: C.muted, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2 }}>{label}</div>
-              <div style={{ fontSize: 13, fontWeight: 800, color: color || C.text }}>{value}</div>
+        {/* Setup reason card */}
+        {trade.reason && (
+          <div style={{
+            background: isLong ? "#e8f7f2" : "#fdeaeb",
+            border: `1px solid ${isLong ? C.green : C.red}44`,
+            borderLeft: `3px solid ${isLong ? C.green : C.red}`,
+            borderRadius: 8, padding: "10px 14px", marginBottom: 12,
+          }}>
+            <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>
+              Waarom deze trade?
             </div>
-          ))}
+            <div style={{ fontSize: 12, fontWeight: 600, color: C.text, lineHeight: 1.55 }}>
+              {trade.reason}
+            </div>
+          </div>
+        )}
+
+        {/* Levels + context score grid */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+
+          {/* Left: level table */}
+          <div style={{ background: C.bg, borderRadius: 10, padding: "10px 12px" }}>
+            <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Niveaus</div>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+              <tbody>
+                {[
+                  { label: "Entry", price: trade.entry_price, color: "#fff", bgRow: "#1a1d2e08", rr: null, pct: null, hit: null },
+                  { label: "SL",    price: trade.stop_loss,   color: C.red,   bgRow: null, rr: null,
+                    pct: slDist ? `-${slDist.toFixed(2)}%` : null, hit: false },
+                  { label: "TP1",   price: trade.tp1, color: C.green, bgRow: null,
+                    rr: tpRR(trade.tp1), pct: tpPct(trade.tp1), hit: trade.tp1_hit },
+                  { label: "TP2",   price: trade.tp2, color: C.green, bgRow: null,
+                    rr: tpRR(trade.tp2), pct: tpPct(trade.tp2), hit: trade.tp2_hit },
+                  { label: "TP3",   price: trade.tp3, color: C.green, bgRow: null,
+                    rr: tpRR(trade.tp3), pct: tpPct(trade.tp3), hit: trade.tp3_hit },
+                ].filter(r => r.price).map(row => (
+                  <tr key={row.label} style={{ borderBottom: `1px solid ${C.border}` }}>
+                    <td style={{ padding: "5px 0", color: row.color, fontWeight: 700, width: 36 }}>{row.label}</td>
+                    <td style={{ padding: "5px 4px", color: C.text, fontWeight: 600, fontFamily: "monospace" }}>
+                      {fmtP(row.price)}
+                    </td>
+                    <td style={{ padding: "5px 4px", color: C.muted, fontSize: 10 }}>
+                      {row.rr && `${row.rr}R`}
+                      {row.pct && !row.rr && row.pct}
+                    </td>
+                    <td style={{ padding: "5px 0", textAlign: "right", fontSize: 11 }}>
+                      {row.hit === true  && <span style={{ color: "#00e5b5", fontWeight: 700 }}>✓</span>}
+                      {row.hit === false && row.label === "SL" && <span style={{ color: C.red, fontWeight: 700 }}>✗</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Right: outcome + score */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {/* PnL card */}
+            <div style={{
+              background: pnlPos ? C.greenBg : C.redBg,
+              border: `1px solid ${pnlPos ? C.green : C.red}44`,
+              borderRadius: 10, padding: "10px 14px", flex: 1,
+              display: "flex", flexDirection: "column", justifyContent: "center",
+            }}>
+              <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Resultaat</div>
+              <div style={{ fontSize: 22, fontWeight: 900, color: pnlPos ? C.green : C.red }}>
+                {pnlPos ? "+" : ""}{fmt(trade.realized_pnl)} $
+              </div>
+              <div style={{ fontSize: 10, color: C.muted, marginTop: 3 }}>
+                Exit: {fmtP(trade.exit_price) || "—"}
+              </div>
+            </div>
+
+            {/* Context score */}
+            {trade.context_score != null && (
+              <div style={{
+                background: C.bg, borderRadius: 10, padding: "10px 14px",
+              }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <span style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 1 }}>Context score</span>
+                  <span style={{ fontSize: 14, fontWeight: 900, color: scoreColor }}>{trade.context_score}/100</span>
+                </div>
+                <div style={{ background: C.border, borderRadius: 4, height: 6, overflow: "hidden" }}>
+                  <div style={{
+                    width: `${trade.context_score}%`, height: "100%",
+                    background: `linear-gradient(90deg, ${scoreColor}88, ${scoreColor})`,
+                    borderRadius: 4, transition: "width 0.6s ease",
+                  }} />
+                </div>
+                <div style={{ fontSize: 9, color: C.muted, marginTop: 4 }}>
+                  {trade.context_score >= 70 ? "Sterk signaal" : trade.context_score >= 50 ? "Voldoende signaal" : "Zwak signaal"}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Chart */}
         <div style={{ marginBottom: 14 }}>
           <SnapshotChart trade={trade} />
-        </div>
-
-        {/* TP progress */}
-        <div style={{ marginBottom: 18 }}>
-          <TpProgress trade={trade} />
         </div>
 
         {/* ── Step 1: Rating ── */}
