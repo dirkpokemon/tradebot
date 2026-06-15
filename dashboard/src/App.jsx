@@ -880,20 +880,9 @@ const REVIEW_LABELS = [
 ];
 
 function TradeReviewModal({ trade, onClose, onSaved }) {
-  const [candles, setCandles] = useState(null);
-  const [entryTs, setEntryTs] = useState(null);
-  const [loadingC, setLoadingC] = useState(true);
   const [selected, setSelected] = useState(trade.review_label || null);
-  const [note, setNote] = useState(trade.review_note || "");
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    setLoadingC(true);
-    fetch(`${API_URL}/trades/${trade.id}/candles`)
-      .then(r => r.ok ? r.json() : null)
-      .then(data => { setCandles(data?.candles || []); setEntryTs(data?.entry_ts ?? null); setLoadingC(false); })
-      .catch(() => { setCandles([]); setLoadingC(false); });
-  }, [trade.id]);
+  const [note, setNote]         = useState(trade.review_note || "");
+  const [saving, setSaving]     = useState(false);
 
   async function saveReview() {
     if (!selected) return;
@@ -945,12 +934,9 @@ function TradeReviewModal({ trade, onClose, onSaved }) {
           <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", color: C.muted, lineHeight: 1 }}>✕</button>
         </div>
 
-        {/* Candle chart */}
+        {/* Candle chart — live candles met entry/SL/TP overlay */}
         <div style={{ marginBottom: 18 }}>
-          {loadingC
-            ? <div style={{ height: 120, display: "flex", alignItems: "center", justifyContent: "center", background: "#131722", borderRadius: 8, color: "#8b92a5", fontSize: 11 }}>Candles laden…</div>
-            : <SnapshotChart candles={candles} entry={trade.entry_price} sl={trade.stop_loss} tp1={trade.tp1} tp2={trade.tp2} tp3={trade.tp3} side={trade.side} entryTs={entryTs} />
-          }
+          <SnapshotChart trade={trade} />
         </div>
 
         {/* TP progress */}
