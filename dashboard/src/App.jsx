@@ -871,111 +871,189 @@ function CandleChart({ candles, entry, sl, tp1, tp2, tp3, side, entryTs }) {
 
 // ─── Trade Review Panel ───────────────────────────────────────────────────────
 
-const REVIEW_LABELS = [
-  { key: "good_entry",    emoji: "✅", label: "Goede entry",      color: C.green  },
-  { key: "too_early",     emoji: "⚠️", label: "Te vroeg",         color: C.yellow },
-  { key: "wrong_setup",   emoji: "❌", label: "Verkeerde setup",   color: C.red    },
-  { key: "bad_rr",        emoji: "📊", label: "Slechte R:R",      color: C.orange },
-  { key: "false_signal",  emoji: "🚫", label: "Vals signaal",     color: C.muted  },
+const RATINGS = [
+  { key: "good",     emoji: "✅", label: "Goed",  color: C.green,  bg: C.greenBg  },
+  { key: "marginal", emoji: "⚠️", label: "Matig", color: C.yellow, bg: C.yellowBg },
+  { key: "bad",      emoji: "❌", label: "Slecht", color: C.red,    bg: C.redBg   },
 ];
 
+const REASONS = {
+  good:     ["Duidelijke setup", "Goed niveau", "Met de trend", "Perfecte timing", "Goede R:R", "Sterke bevestiging"],
+  marginal: ["Te vroeg", "Te laat", "Niveau net niet", "R:R kon beter", "Slechte timing", "Onduidelijke setup"],
+  bad:      ["Geen duidelijke setup", "Niveau klopte niet", "Slechte R:R", "Tegen de trend", "Vals signaal", "Te klein SL"],
+};
+
+function getLabelDisplay(key) {
+  const map = {
+    good:         { emoji: "✅", label: "Goed",            color: C.green  },
+    marginal:     { emoji: "⚠️", label: "Matig",           color: C.yellow },
+    bad:          { emoji: "❌", label: "Slecht",           color: C.red    },
+    good_entry:   { emoji: "✅", label: "Goede entry",      color: C.green  },
+    too_early:    { emoji: "⚠️", label: "Te vroeg",         color: C.yellow },
+    wrong_setup:  { emoji: "❌", label: "Verkeerde setup",  color: C.red    },
+    bad_rr:       { emoji: "📊", label: "Slechte R:R",      color: C.orange },
+    false_signal: { emoji: "🚫", label: "Vals signaal",     color: C.muted  },
+  };
+  return map[key] || { emoji: "?", label: key, color: C.muted };
+}
+
 function TradeReviewModal({ trade, onClose, onSaved }) {
-  const [selected, setSelected] = useState(trade.review_label || null);
-  const [note, setNote]         = useState(trade.review_note || "");
-  const [saving, setSaving]     = useState(false);
+  const existingRating = ["good","marginal","bad"].includes(trade.review_label) ? trade.review_label : null;
+  const [rating,    setRating]    = useState(existingRating);
+  const [reasons,   setReasons]   = useState(new Set());
+  const [noteText,  setNoteText]  = useState(trade.review_note || "");
+  const [saving,    setSaving]    = useState(false);
+
+  function toggleReason(r) {
+    setReasons(prev => {
+      const next = new Set(prev);
+      next.has(r) ? next.delete(r) : next.add(r);
+      return next;
+    });
+  }
 
   async function saveReview() {
-    if (!selected) return;
+    if (!rating) return;
     setSaving(true);
+    const parts = [];
+    if (reasons.size > 0) parts.push([...reasons].join(", "));
+    if (noteText.trim()) parts.push(noteText.trim());
+    const note = parts.join("\n");
     await fetch(`${API_URL}/trades/${trade.id}/review`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ label: selected, note }),
+      body: JSON.stringify({ label: rating, note }),
     });
     setSaving(false);
-    onSaved(trade.id, selected, note);
+    onSaved(trade.id, rating, note);
     onClose();
   }
 
-  const isLong = trade.side === "buy";
-  const pnlPos = trade.realized_pnl >= 0;
+  const isLong  = trade.side === "buy";
+  const pnlPos  = trade.realized_pnl >= 0;
+  const rr      = trade.entry_price && trade.stop_loss && trade.tp3
+    ? Math.abs((trade.tp3 - trade.entry_price) / (trade.entry_price - trade.stop_loss)).toFixed(1)
+    : null;
 
   return (
     <div style={{
-      position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", zIndex: 1000,
-      display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
+      position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 1000,
+      display: "flex", alignItems: "flex-start", justifyContent: "center",
+      padding: "12px 12px", overflowY: "auto",
     }} onClick={onClose}>
       <div style={{
-        background: C.card, borderRadius: 16, padding: 24, maxWidth: 840, width: "100%",
-        boxShadow: "0 20px 60px rgba(0,0,0,0.3)", maxHeight: "90vh", overflowY: "auto",
+        background: C.card, borderRadius: 16, padding: 20, maxWidth: 780, width: "100%",
+        boxShadow: "0 24px 64px rgba(0,0,0,0.35)", marginTop: 8,
       }} onClick={e => e.stopPropagation()}>
 
-        {/* Header */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
-          <div>
-            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4 }}>
-              <span style={{ fontSize: 14, fontWeight: 800, color: isLong ? C.green : C.red }}>
-                {isLong ? "▲ LONG" : "▼ SHORT"}
-              </span>
-              <Tag color={C.blue} bg={C.blueBg}>{trade.setup_type?.replace("_", " ")}</Tag>
-              {trade.trade_mode && (
-                <Tag color={trade.trade_mode === "scalp" ? C.orange : C.muted} bg={trade.trade_mode === "scalp" ? "#fff3ec" : "#f5f6fa"}>
-                  {trade.trade_mode.toUpperCase()}
-                </Tag>
-              )}
-              <span style={{ fontSize: 11, color: pnlPos ? C.green : C.red, fontWeight: 700 }}>
-                {pnlPos ? "+" : ""}{fmt(trade.realized_pnl)} USDT
-              </span>
-            </div>
-            <div style={{ fontSize: 10, color: C.muted }}>
-              Entry {fmtP(trade.entry_price)} → Exit {fmtP(trade.exit_price)} · {trade.timestamp?.slice(0, 10)}
-            </div>
+        {/* Header row */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ fontSize: 15, fontWeight: 800, color: isLong ? C.green : C.red }}>
+              {isLong ? "▲ LONG" : "▼ SHORT"}
+            </span>
+            <Tag color={C.blue} bg={C.blueBg}>{trade.setup_type?.replace("_", " ")}</Tag>
+            {trade.trade_mode && (
+              <Tag color={trade.trade_mode === "scalp" ? C.orange : C.muted} bg={trade.trade_mode === "scalp" ? "#fff3ec" : "#f5f6fa"}>
+                {trade.trade_mode.toUpperCase()}
+              </Tag>
+            )}
           </div>
-          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", color: C.muted, lineHeight: 1 }}>✕</button>
+          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 20, cursor: "pointer", color: C.muted, lineHeight: 1, padding: "0 4px" }}>✕</button>
         </div>
 
-        {/* Candle chart — live candles met entry/SL/TP overlay */}
-        <div style={{ marginBottom: 18 }}>
+        {/* Key numbers row */}
+        <div style={{
+          display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 14,
+          background: C.bg, borderRadius: 10, padding: "10px 12px",
+        }}>
+          {[
+            { label: "Entry",  value: fmtP(trade.entry_price) },
+            { label: "Exit",   value: fmtP(trade.exit_price) || "—" },
+            { label: "PnL",    value: `${pnlPos ? "+" : ""}${fmt(trade.realized_pnl)} $`, color: pnlPos ? C.green : C.red },
+            { label: "R:R",    value: rr ? `${rr}R` : "—" },
+          ].map(({ label, value, color }) => (
+            <div key={label} style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 9, color: C.muted, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2 }}>{label}</div>
+              <div style={{ fontSize: 13, fontWeight: 800, color: color || C.text }}>{value}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Chart */}
+        <div style={{ marginBottom: 14 }}>
           <SnapshotChart trade={trade} />
         </div>
 
         {/* TP progress */}
-        <div style={{ display: "flex", gap: 6, marginBottom: 18 }}>
+        <div style={{ marginBottom: 18 }}>
           <TpProgress trade={trade} />
         </div>
 
-        {/* Label buttons */}
-        <div style={{ fontSize: 10, color: C.muted, letterSpacing: 1, textTransform: "uppercase", marginBottom: 8 }}>Beoordeling</div>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
-          {REVIEW_LABELS.map(l => (
-            <button key={l.key} onClick={() => setSelected(l.key)} style={{
-              padding: "8px 14px", borderRadius: 8, fontSize: 11, fontWeight: 700, cursor: "pointer",
-              border: `2px solid ${selected === l.key ? l.color : C.border}`,
-              background: selected === l.key ? l.color + "18" : "#fafbfd",
-              color: selected === l.key ? l.color : C.muted,
-              transition: "all 0.15s",
-            }}>
-              {l.emoji} {l.label}
-            </button>
-          ))}
+        {/* ── Step 1: Rating ── */}
+        <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 1, textTransform: "uppercase", marginBottom: 10 }}>
+          Hoe was deze trade?
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 20 }}>
+          {RATINGS.map(r => {
+            const active = rating === r.key;
+            return (
+              <button key={r.key} onClick={() => { setRating(r.key); setReasons(new Set()); }} style={{
+                padding: "14px 8px", borderRadius: 12, cursor: "pointer", fontFamily: "inherit",
+                border: `2px solid ${active ? r.color : C.border}`,
+                background: active ? r.bg : C.card,
+                display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
+                transition: "all 0.15s",
+              }}>
+                <span style={{ fontSize: 22 }}>{r.emoji}</span>
+                <span style={{ fontSize: 12, fontWeight: 800, color: active ? r.color : C.muted }}>{r.label}</span>
+              </button>
+            );
+          })}
         </div>
 
-        {/* Note */}
-        <textarea
-          placeholder="Optionele notitie (wat zag je? wat ging goed/fout?)"
-          value={note}
-          onChange={e => setNote(e.target.value)}
-          style={{
-            width: "100%", minHeight: 64, padding: "8px 12px", borderRadius: 8,
-            border: `1px solid ${C.border}`, background: "#fafbfd", color: C.text,
-            fontFamily: "inherit", fontSize: 11, resize: "vertical", marginBottom: 14, boxSizing: "border-box",
-          }}
-        />
+        {/* ── Step 2: Reasons (only after rating selected) ── */}
+        {rating && (
+          <>
+            <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 1, textTransform: "uppercase", marginBottom: 8 }}>
+              Wat was de reden? <span style={{ fontWeight: 400, textTransform: "none" }}>(optioneel, meerdere mogelijk)</span>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 18 }}>
+              {REASONS[rating].map(r => {
+                const active = reasons.has(r);
+                const rc = RATINGS.find(x => x.key === rating);
+                return (
+                  <button key={r} onClick={() => toggleReason(r)} style={{
+                    padding: "6px 12px", borderRadius: 20, fontSize: 11, fontWeight: 600, cursor: "pointer",
+                    fontFamily: "inherit", transition: "all 0.12s",
+                    border: `1.5px solid ${active ? rc.color : C.border}`,
+                    background: active ? rc.color + "18" : "#fafbfd",
+                    color: active ? rc.color : C.muted,
+                  }}>
+                    {r}
+                  </button>
+                );
+              })}
+            </div>
 
-        {/* Save */}
-        <button className="btn-primary" onClick={saveReview} disabled={!selected || saving}>
-          {saving ? "Opslaan…" : "Opslaan"}
-        </button>
+            {/* ── Step 3: Note ── */}
+            <textarea
+              placeholder="Extra notitie (optioneel) — wat zag je in de chart?"
+              value={noteText}
+              onChange={e => setNoteText(e.target.value)}
+              style={{
+                width: "100%", minHeight: 56, padding: "8px 12px", borderRadius: 8,
+                border: `1px solid ${C.border}`, background: "#fafbfd", color: C.text,
+                fontFamily: "inherit", fontSize: 11, resize: "vertical", marginBottom: 14,
+                boxSizing: "border-box",
+              }}
+            />
+
+            <button className="btn-primary" onClick={saveReview} disabled={saving} style={{ width: "100%", padding: "12px", fontSize: 13, borderRadius: 10 }}>
+              {saving ? "Opslaan…" : "Opslaan"}
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
@@ -1022,12 +1100,11 @@ function TradeReviewPanel({ closedTrades }) {
       {/* Label summary */}
       {done.length > 0 && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 18 }}>
-          {REVIEW_LABELS.map(l => {
-            const s = summary[l.key];
-            if (!s) return null;
+          {Object.entries(summary).map(([key, s]) => {
+            const l  = getLabelDisplay(key);
             const wr = Math.round(s.wins / s.total * 100);
             return (
-              <div key={l.key} style={{
+              <div key={key} style={{
                 background: l.color + "12", border: `1px solid ${l.color}33`,
                 borderRadius: 10, padding: "8px 12px", fontSize: 10,
               }}>
@@ -1043,7 +1120,6 @@ function TradeReviewPanel({ closedTrades }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {[...closedTrades].reverse().map(t => {
           const rv = reviews[t.id];
-          const lbl = rv ? REVIEW_LABELS.find(l => l.key === rv.label) : null;
           const pnlPos = t.realized_pnl >= 0;
           return (
             <div key={t.id} onClick={() => setReviewTrade(t)} style={{
@@ -1066,8 +1142,8 @@ function TradeReviewPanel({ closedTrades }) {
                 <div style={{ fontSize: 10, color: C.muted }}>{t.timestamp?.slice(0, 16).replace("T", " ")}</div>
               </div>
               <div style={{ textAlign: "right", flexShrink: 0 }}>
-                {lbl ? (
-                  <span style={{ fontSize: 11, color: lbl.color, fontWeight: 700 }}>{lbl.emoji} {lbl.label}</span>
+                {rv ? (
+                  <span style={{ fontSize: 11, color: getLabelDisplay(rv.label).color, fontWeight: 700 }}>{getLabelDisplay(rv.label).emoji} {getLabelDisplay(rv.label).label}</span>
                 ) : (
                   <span style={{
                     fontSize: 10, padding: "4px 10px", borderRadius: 6, fontWeight: 700,
