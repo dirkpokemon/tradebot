@@ -61,6 +61,64 @@ const fmtP    = (n) => n == null ? "—" : Number(n).toLocaleString("nl-NL", { m
 const fmtSign = (n, d = 2) => n == null ? "—" : `${n >= 0 ? "+" : ""}$${fmt(n, d)}`;
 const getPhase = (t) => PHASES[t.status] || PHASES.open;
 
+function buildTradeStory(trade) {
+  if (!trade) return null;
+  const isLong  = trade.side === "buy";
+  const dir     = isLong ? "long" : "short";
+  const riskPts = trade.entry_price && trade.stop_loss
+    ? Math.abs(trade.entry_price - trade.stop_loss) : null;
+  const slPct   = trade.entry_price && trade.stop_loss
+    ? Math.abs((trade.entry_price - trade.stop_loss) / trade.entry_price * 100).toFixed(2) : null;
+  const rrOf    = (tp) => riskPts && tp
+    ? (Math.abs(tp - trade.entry_price) / riskPts).toFixed(1) : null;
+
+  const setupIntros = {
+    rotation: isLong
+      ? "De prijs maakte een hogere bodem (Higher Low) en brak daarna boven een eerdere swing high uit. Dit signaleert een trendwissel van bearish naar bullish — de bot stapt in aan het begin van een nieuwe opwaartse beweging."
+      : "De prijs maakte een lagere top (Lower High) en brak daarna onder een eerdere swing low uit. Dit signaleert een trendwissel van bullish naar bearish — de bot gaat short aan het begin van een nieuwe neerwaartse beweging.",
+    continuation: isLong
+      ? "De prijs was in een duidelijke uptrend en pullde terug naar een oud support- of resistanceniveau dat nu als support fungeert. De bot kocht de terugval als instapkans in de richting van de trend."
+      : "De prijs was in een duidelijke downtrend en bounced terug naar een oud weerstandsniveau dat nu als resistance fungeert. De bot shortte de bounce als instapkans in de richting van de trend.",
+    breakout: isLong
+      ? "De prijs brak boven een key resistanceniveau uit en retestte dit niveau vervolgens als nieuwe support. De bevestigde retest gaf de bot een veilig instapmoment."
+      : "De prijs brak onder een key supportniveau uit en retestte dit niveau vervolgens als nieuwe weerstand. De bevestigde retest gaf de bot een veilig instapmoment.",
+    liquidity_sweep: isLong
+      ? "De prijs maakte een snelle wick (spike) onder een key supportniveau — hierbij worden stop-losses van andere traders geraakt (liquiditeit ophalen) — en keerde direct terug boven dat niveau. Dit 'sweep & reverse' patroon signaleert een valse neerwaartse uitbraak en mogelijke reversal omhoog."
+      : "De prijs maakte een snelle wick (spike) boven een key resistanceniveau — hierbij worden stop-losses van andere traders geraakt (liquiditeit ophalen) — en keerde direct terug onder dat niveau. Dit 'sweep & reverse' patroon signaleert een valse opwaartse uitbraak en mogelijke reversal omlaag.",
+  };
+
+  const intro = setupIntros[trade.setup_type] || trade.reason || "";
+
+  const parts = [intro];
+
+  if (trade.entry_price && trade.stop_loss) {
+    parts.push(
+      `De entry was op ${fmtP(trade.entry_price)}, met een stop loss op ${fmtP(trade.stop_loss)}` +
+      (slPct ? ` — een risico van ${slPct}% van de positie.` : ".")
+    );
+  }
+
+  const tpParts = [
+    trade.tp1 && `TP1 ${fmtP(trade.tp1)}${rrOf(trade.tp1) ? ` (${rrOf(trade.tp1)}R)` : ""}`,
+    trade.tp2 && `TP2 ${fmtP(trade.tp2)}${rrOf(trade.tp2) ? ` (${rrOf(trade.tp2)}R)` : ""}`,
+    trade.tp3 && `TP3 ${fmtP(trade.tp3)}${rrOf(trade.tp3) ? ` (${rrOf(trade.tp3)}R)` : ""}`,
+  ].filter(Boolean);
+  if (tpParts.length) parts.push(`Targets: ${tpParts.join(" · ")}.`);
+
+  if (trade.status === "closed") {
+    const won   = trade.realized_pnl >= 0;
+    const hits  = [trade.tp1_hit && "TP1", trade.tp2_hit && "TP2", trade.tp3_hit && "TP3"].filter(Boolean);
+    if (won) {
+      parts.push(`✅ Trade gesloten met winst van $${fmt(trade.realized_pnl)}` +
+        (hits.length ? ` — ${hits.join(" en ")} geraakt.` : "."));
+    } else {
+      parts.push(`❌ Stop loss geraakt. Trade gesloten met verlies van $${fmt(Math.abs(trade.realized_pnl))}.`);
+    }
+  }
+
+  return parts;
+}
+
 function getSession() {
   const h = new Date().getUTCHours();
   if (h >= 8  && h < 12) return { name: "London",   color: C.blue,   active: true  };
@@ -988,22 +1046,30 @@ function TradeReviewModal({ trade, onClose, onSaved }) {
           <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 20, cursor: "pointer", color: C.muted, lineHeight: 1, padding: "0 4px" }}>✕</button>
         </div>
 
-        {/* Setup reason card */}
-        {trade.reason && (
-          <div style={{
-            background: isLong ? "#e8f7f2" : "#fdeaeb",
-            border: `1px solid ${isLong ? C.green : C.red}44`,
-            borderLeft: `3px solid ${isLong ? C.green : C.red}`,
-            borderRadius: 8, padding: "10px 14px", marginBottom: 12,
-          }}>
-            <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>
-              Waarom deze trade?
+        {/* Setup story card */}
+        {(() => {
+          const story = buildTradeStory(trade);
+          if (!story) return null;
+          return (
+            <div style={{
+              background: isLong ? "#e8f7f2" : "#fdeaeb",
+              border: `1px solid ${isLong ? C.green : C.red}44`,
+              borderLeft: `3px solid ${isLong ? C.green : C.red}`,
+              borderRadius: 8, padding: "12px 14px", marginBottom: 12,
+            }}>
+              <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>
+                Waarom deze trade?
+              </div>
+              {story.map((line, i) => (
+                <p key={i} style={{
+                  fontSize: 12, color: C.text, lineHeight: 1.65, margin: 0,
+                  marginBottom: i < story.length - 1 ? 6 : 0,
+                  fontWeight: i === 0 ? 500 : 400,
+                }}>{line}</p>
+              ))}
             </div>
-            <div style={{ fontSize: 12, fontWeight: 600, color: C.text, lineHeight: 1.55 }}>
-              {trade.reason}
-            </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* Levels + context score grid */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
