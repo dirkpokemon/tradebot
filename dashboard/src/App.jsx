@@ -183,13 +183,13 @@ function EmptyState({ icon, text, sub, height = 120 }) {
 
 function StatCard({ label, value, sub, accent, small }) {
   return (
-    <div style={{
+    <div className="stat-card" style={{
       background: C.card, borderRadius: 12, padding: small ? "12px 16px" : "16px 20px",
       boxShadow: C.shadow, flex: 1, minWidth: 100,
       borderLeft: accent ? `3px solid ${accent}` : "3px solid transparent",
     }}>
       <div style={{ fontSize: 9, color: C.muted, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 6 }}>{label}</div>
-      <div style={{ fontSize: small ? 16 : 20, fontWeight: 700, color: accent || C.text, lineHeight: 1 }}>{value}</div>
+      <div className="stat-value" style={{ fontSize: small ? 16 : 20, fontWeight: 700, color: accent || C.text, lineHeight: 1 }}>{value}</div>
       {sub && <div style={{ fontSize: 10, color: C.dim, marginTop: 4 }}>{sub}</div>}
     </div>
   );
@@ -394,7 +394,7 @@ function ActiveTradeCard({ trade }) {
       </div>
 
       {/* Price grid */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 8, marginBottom: 4 }}>
+      <div className="price-grid-6" style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 8, marginBottom: 4 }}>
         {[
           { label: "ENTRY",  value: fmtP(trade.entry_price), color: C.text },
           { label: slLabel,  value: fmtP(trade.stop_loss),   color: C.red  },
@@ -728,7 +728,8 @@ function ClosedTradesTable({ trades }) {
   }
   return (
     <div style={{ background: C.card, borderRadius: 14, boxShadow: C.shadow, overflow: "hidden" }}>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+      <div className="closed-table-scroll">
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, minWidth: 560 }}>
         <thead>
           <tr style={{ borderBottom: `1px solid ${C.border}`, background: "#fafbfd" }}>
             {["Tijd", "Setup", "Mode", "Side", "Entry", "Exit", "TP's", "PnL"].map(h => (
@@ -771,6 +772,7 @@ function ClosedTradesTable({ trades }) {
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }
@@ -1019,12 +1021,12 @@ function TradeReviewModal({ trade, onClose, onSaved }) {
   const scoreColor = trade.context_score >= 70 ? C.green : trade.context_score >= 50 ? C.yellow : C.red;
 
   return (
-    <div style={{
+    <div className="modal-overlay" style={{
       position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 1000,
       display: "flex", alignItems: "flex-start", justifyContent: "center",
       padding: "12px 12px", overflowY: "auto",
     }} onClick={onClose}>
-      <div style={{
+      <div className="modal-inner" style={{
         background: C.card, borderRadius: 16, padding: 20, maxWidth: 820, width: "100%",
         boxShadow: "0 24px 64px rgba(0,0,0,0.35)", marginTop: 8,
       }} onClick={e => e.stopPropagation()}>
@@ -1060,6 +1062,7 @@ function TradeReviewModal({ trade, onClose, onSaved }) {
               <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>
                 Waarom deze trade?
               </div>
+              <div className="modal-story">
               {story.map((line, i) => (
                 <p key={i} style={{
                   fontSize: 12, color: C.text, lineHeight: 1.65, margin: 0,
@@ -1067,12 +1070,13 @@ function TradeReviewModal({ trade, onClose, onSaved }) {
                   fontWeight: i === 0 ? 500 : 400,
                 }}>{line}</p>
               ))}
+              </div>
             </div>
           );
         })()}
 
         {/* Levels + context score grid */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+        <div className="modal-levels-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
 
           {/* Left: level table */}
           <div style={{ background: C.bg, borderRadius: 10, padding: "10px 12px" }}>
@@ -1160,7 +1164,7 @@ function TradeReviewModal({ trade, onClose, onSaved }) {
         <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 1, textTransform: "uppercase", marginBottom: 10 }}>
           Hoe was deze trade?
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 20 }}>
+        <div className="rating-btn-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 20 }}>
           {RATINGS.map(r => {
             const active = rating === r.key;
             return (
@@ -1184,7 +1188,7 @@ function TradeReviewModal({ trade, onClose, onSaved }) {
             <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 1, textTransform: "uppercase", marginBottom: 8 }}>
               Wat was de reden? <span style={{ fontWeight: 400, textTransform: "none" }}>(optioneel, meerdere mogelijk)</span>
             </div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 18 }}>
+            <div className="reason-chips" style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 18 }}>
               {REASONS[rating].map(r => {
                 const active = reasons.has(r);
                 const rc = RATINGS.find(x => x.key === rating);
@@ -1293,7 +1297,7 @@ function TradeReviewPanel({ closedTrades }) {
           const rv = reviews[t.id];
           const pnlPos = t.realized_pnl >= 0;
           return (
-            <div key={t.id} onClick={() => setReviewTrade(t)} style={{
+            <div key={t.id} className="review-list-item" onClick={() => setReviewTrade(t)} style={{
               display: "flex", alignItems: "center", gap: 10,
               padding: "14px 16px", borderRadius: 10, cursor: "pointer",
               background: rv ? "#fafbfd" : "#fffdf5",
@@ -1899,7 +1903,7 @@ export default function Dashboard() {
     : null;
 
   return (
-    <div style={{
+    <div className="main-container" style={{
       minHeight: "100vh", background: C.bg, color: C.text,
       fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif",
       padding: "24px 28px", maxWidth: 1440, margin: "0 auto",
@@ -1937,12 +1941,35 @@ export default function Dashboard() {
           .main-grid { grid-template-columns: 1fr !important; }
           .analytics-grid { grid-template-columns: 1fr !important; }
         }
+        @media (max-width: 768px) {
+          .main-container { padding: 12px !important; }
+          .header-row { flex-wrap: wrap !important; gap: 6px !important; }
+          .stat-cards-row { display: grid !important; grid-template-columns: 1fr 1fr !important; gap: 8px !important; }
+          .stat-card { min-width: 0 !important; padding: 12px 14px !important; }
+          .stat-card .stat-value { font-size: 16px !important; }
+          .price-grid-6 { grid-template-columns: repeat(3,1fr) !important; gap: 6px !important; }
+          .closed-table-scroll { overflow-x: auto !important; -webkit-overflow-scrolling: touch !important; }
+          .modal-overlay { padding: 0 !important; align-items: flex-end !important; }
+          .modal-inner { padding: 14px !important; margin-top: 0 !important; border-radius: 20px 20px 0 0 !important; max-height: 92svh !important; overflow-y: auto !important; max-width: 100% !important; }
+          .modal-levels-grid { grid-template-columns: 1fr !important; gap: 8px !important; }
+          .modal-story p { font-size: 11px !important; line-height: 1.55 !important; }
+          .rating-btn-grid { gap: 6px !important; }
+          .rating-btn-grid button { padding: 12px 6px !important; }
+          .reason-chips button { padding: 8px 10px !important; font-size: 12px !important; }
+          .review-list-item { padding: 12px !important; }
+          .tf-btn { padding: 4px 8px !important; font-size: 10px !important; }
+          .analysis-panel { font-size: 11px !important; }
+        }
+        @media (max-width: 480px) {
+          .main-container { padding: 8px !important; }
+          .stat-cards-row { gap: 6px !important; }
+        }
       `}</style>
 
       <CircuitBreakerBanner status={status} />
 
       {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+      <div className="header-row" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
         <div>
           <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: -0.5, color: C.text }}>
             Trade<span style={{ color: C.blue }}>Bot</span>
@@ -1981,7 +2008,7 @@ export default function Dashboard() {
       )}
 
       {/* ── Stats row ──────────────────────────────────────────────────────── */}
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 24 }}>
+      <div className="stat-cards-row" style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 24 }}>
         <StatCard label="Balance"     value={status ? `$${fmt(status.balance, 0)}` : "—"}     sub="USDT vrij"     accent={C.blue}  />
         <StatCard label="Equity"      value={status ? `$${fmt(status.equity,  0)}` : "—"}     sub="USDT totaal"                    />
         <StatCard label="Total PnL"   value={<PnlBadge value={status?.total_pnl} size={18} />}                                     />
