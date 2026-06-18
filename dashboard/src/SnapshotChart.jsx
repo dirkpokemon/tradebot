@@ -11,36 +11,67 @@ const THEME = {
   green:  "#26a69a",
   red:    "#ef5350",
   yellow: "#f59f00",
+  white:  "#d1d4dc",
 };
 
-const TF_OPTIONS = ["5m", "15m", "1h", "4h"];
-const PRICE_AXIS_W = 68; // approximate right price-scale width in px
+const PRICE_AXIS_W = 68;
+
+const SCENES = [
+  { id: 1, emoji: "📊", label: "Context" },
+  { id: 2, emoji: "🎯", label: "Entry" },
+  { id: 3, emoji: "📈", label: "Verloop" },
+];
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function findSwingPoints(candles, lookback = 3) {
+  const points = [];
+  for (let i = lookback; i < candles.length - lookback; i++) {
+    const c = candles[i];
+    const isHH = candles.slice(i - lookback, i).every(x => x.high <= c.high)
+              && candles.slice(i + 1, i + lookback + 1).every(x => x.high <= c.high);
+    const isLL = candles.slice(i - lookback, i).every(x => x.low >= c.low)
+              && candles.slice(i + 1, i + lookback + 1).every(x => x.low >= c.low);
+    if (isHH) points.push({ type: "SH", time: c.time, price: c.high, idx: i });
+    if (isLL) points.push({ type: "SL", time: c.time, price: c.low,  idx: i });
+  }
+  return points;
+}
+
+function extractKeyLevels(reason, entryPrice) {
+  if (!reason || !entryPrice) return [];
+  const matches = (reason.match(/\b\d{4,6}(?:\.\d+)?\b/g) || []).map(Number);
+  return [...new Set(matches)].filter(
+    p => p > 0 && Math.abs(p - entryPrice) / entryPrice < 0.06 && Math.round(p) !== Math.round(entryPrice)
+  );
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
 
 export default function SnapshotChart({ trade }) {
-  const wrapperRef    = useRef(null);
   const containerRef  = useRef(null);
   const chartRef      = useRef(null);
   const seriesRef     = useRef(null);
   const markersRef    = useRef(null);
   const priceLinesRef = useRef([]);
+  const candlesRef    = useRef(null);
   const entryTsRef    = useRef(null);
-
-  // stable ref so the chart subscription always calls latest computeOverlay
+  const sceneRef      = useRef(1);
   const computeOverlayRef = useRef(null);
 
-  const [tf, setTf]         = useState("15m");
-  const [error, setError]   = useState(null);
+  const [scene, setScene]     = useState(1);
+  const [error, setError]     = useState(null);
   const [loading, setLoading] = useState(true);
   const [source, setSource]   = useState(null);
   const [overlay, setOverlay] = useState(null);
 
   const isLong = trade.side === "buy";
 
-  // ── Compute zone overlay from chart internals ──────────────────────────────
+  // ── Overlay computation ───────────────────────────────────────────────────
   const computeOverlay = useCallback(() => {
     if (!chartRef.current || !seriesRef.current) return;
-    if (!trade.entry_price || !trade.stop_loss)   return;
-
+    if (!trade.entry_price || !trade.stop_loss) return;
+    if (sceneRef.current !== 2) { setOverlay(null); return; }
     try {
       const entryY = seriesRef.current.priceToCoordinate(trade.entry_price);
       const slY    = seriesRef.current.priceToCoordinate(trade.stop_loss);
@@ -49,85 +80,149 @@ export default function SnapshotChart({ trade }) {
       const entryX = entryTsRef.current
         ? chartRef.current.timeScale().timeToCoordinate(entryTsRef.current)
         : null;
-
       if (entryY == null || slY == null) { setOverlay(null); return; }
       setOverlay({ entryY, slY, tpY, entryX });
     } catch { setOverlay(null); }
   }, [trade]);
 
-  // keep ref in sync
   useEffect(() => { computeOverlayRef.current = computeOverlay; }, [computeOverlay]);
 
-  // ── Main draw function ─────────────────────────────────────────────────────
-  const drawChart = useCallback(async () => {
-    if (!seriesRef.current) return;
-    setLoading(true);
-    setError(null);
-    setOverlay(null);
+  // ── Render a scene ────────────────────────────────────────────────────────
+  const renderScene = useCallback((sceneId) => {
+    if (!seriesRef.current || !chartRef.current || !candlesRef.current) return;
+    const candles  = candlesRef.current;
+    const entryTs  = entryTsRef.current;
+    const entryIdx = entryTs != null
+      ? candles.findIndex(c => c.time >= entryTs)
+      : -1;
 
-    try {
-      let candles = null;
-      let entryTs = trade.timestamp
-        ? Math.floor(new Date(trade.timestamp).getTime() / 1000)
-        : null;
+    priceLinesRef.current.forEach(pl => {
+      try { seriesRef.current.removePriceLine(pl); } catch { /**/ }
+    });
+    priceLinesRef.current = [];
 
-      // Try stored snapshot for 15m (shows the actual market moment)
-      if (tf === "15m" && trade.id) {
-        try {
-          const snapRes = await fetch(`${API_URL}/trades/${trade.id}/candles`);
-          if (snapRes.ok) {
-            const snap = await snapRes.json();
-            if (snap.candles && snap.candles.length >= 20) {
-              candles = snap.candles.map(c => ({
-                time: c[0], open: c[1], high: c[2], low: c[3], close: c[4],
-              }));
-              if (snap.entry_ts) entryTs = snap.entry_ts;
-              setSource("snapshot");
-            }
-          }
-        } catch { /* fall through to live */ }
-      }
+    if (markersRef.current) { markersRef.current.detach(); markersRef.current = null; }
 
-      if (!candles) {
-        const res = await fetch(`${API_URL}/candles?timeframe=${tf}&limit=300`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        candles = await res.json();
-        setSource("live");
-      }
+    const addLine = (price, color, title, style = 2, width = 1) => {
+      if (!price || price <= 0) return;
+      priceLinesRef.current.push(
+        seriesRef.current.createPriceLine({
+          price, color, lineWidth: width, lineStyle: style,
+          axisLabelVisible: true, title,
+        })
+      );
+    };
 
-      if (!candles.length) throw new Error("Geen candles beschikbaar");
+    const riskPts = trade.entry_price && trade.stop_loss
+      ? Math.abs(trade.entry_price - trade.stop_loss) : null;
+    const rrText = (tp) => riskPts && tp
+      ? `  ${(Math.abs(tp - trade.entry_price) / riskPts).toFixed(1)}R` : "";
 
-      seriesRef.current.setData(candles);
+    const markers = [];
 
-      // Remove old price lines
-      priceLinesRef.current.forEach(pl => {
-        try { seriesRef.current.removePriceLine(pl); } catch { /* */ }
+    // ── Scene 1: Context ─────────────────────────────────────────────────────
+    if (sceneId === 1) {
+      const from = entryIdx >= 0 ? Math.max(0, entryIdx - 80) : 0;
+      const to   = entryIdx >= 0 ? entryIdx + 5 : candles.length - 1;
+      const contextCandles = candles.slice(from, to + 1);
+
+      const keyLevels = extractKeyLevels(trade.reason, trade.entry_price);
+      keyLevels.forEach(lvl => {
+        addLine(lvl, THEME.yellow, `Key ${Math.round(lvl).toLocaleString()}`, 1, 1);
       });
-      priceLinesRef.current = [];
 
-      // ── Price lines ──────────────────────────────────────────────────────
-      const addLine = (price, color, title, style = 2, width = 1) => {
-        if (!price || price <= 0) return;
-        priceLinesRef.current.push(
-          seriesRef.current.createPriceLine({
-            price, color, lineWidth: width, lineStyle: style,
-            axisLabelVisible: true, title,
-          })
-        );
-      };
+      if (trade.entry_price) {
+        addLine(trade.entry_price, "rgba(255,255,255,0.4)", `Entry ${Math.round(trade.entry_price).toLocaleString()}`, 2, 1);
+      }
 
-      const riskPts = trade.entry_price && trade.stop_loss
-        ? Math.abs(trade.entry_price - trade.stop_loss)
-        : null;
+      const swings = findSwingPoints(contextCandles, 3);
+      const dedupSwings = [];
+      for (const s of swings) {
+        const nearby = dedupSwings.find(x => x.type === s.type && Math.abs(x.idx - s.idx) < 5);
+        if (!nearby) dedupSwings.push(s);
+        else if (s.type === "SH" && s.price > nearby.price) {
+          dedupSwings.splice(dedupSwings.indexOf(nearby), 1, s);
+        } else if (s.type === "SL" && s.price < nearby.price) {
+          dedupSwings.splice(dedupSwings.indexOf(nearby), 1, s);
+        }
+      }
+      dedupSwings.slice(-6).forEach(s => {
+        markers.push({
+          time:     s.time,
+          position: s.type === "SH" ? "aboveBar" : "belowBar",
+          shape:    "circle",
+          color:    s.type === "SH" ? "#9c64ff" : "#64b5f6",
+          size:     0.8,
+          text:     s.type === "SH" ? "SH" : "SL",
+        });
+      });
 
-      const rrText = (tp) => riskPts && tp
-        ? `  ${(Math.abs(tp - trade.entry_price) / riskPts).toFixed(1)}R`
-        : "";
+      if (entryTs && entryIdx >= 0) {
+        const c = candles[entryIdx];
+        markers.push({
+          time:     c.time,
+          position: isLong ? "belowBar" : "aboveBar",
+          shape:    isLong ? "arrowUp" : "arrowDown",
+          color:    isLong ? THEME.green : THEME.red,
+          size:     1.5,
+          text:     isLong ? "▲" : "▼",
+        });
+      }
 
-      addLine(trade.entry_price, "#ffffff",
+      markers.sort((a, b) => a.time - b.time);
+      if (markers.length) markersRef.current = createSeriesMarkers(seriesRef.current, markers);
+
+      const fromTime = contextCandles[0]?.time;
+      const toTime   = contextCandles[contextCandles.length - 1]?.time;
+      if (fromTime && toTime) {
+        chartRef.current.timeScale().setVisibleRange({ from: fromTime, to: toTime });
+      }
+
+    // ── Scene 2: Entry ───────────────────────────────────────────────────────
+    } else if (sceneId === 2) {
+      const from = entryIdx >= 0 ? Math.max(0, entryIdx - 12) : 0;
+      const to   = entryIdx >= 0 ? Math.min(candles.length - 1, entryIdx + 16) : candles.length - 1;
+
+      addLine(trade.entry_price, THEME.white,
         `Entry  ${Math.round(trade.entry_price).toLocaleString()}`, 0, 2);
-      addLine(trade.stop_loss,   THEME.red,
+      addLine(trade.stop_loss, THEME.red,
         `SL  ${Math.round(trade.stop_loss).toLocaleString()}`, 0, 1.5);
+      addLine(trade.tp1, THEME.green, `TP1${rrText(trade.tp1)}`, 1, 1);
+      if (trade.tp2) addLine(trade.tp2, THEME.green, `TP2${rrText(trade.tp2)}`, 1, 1);
+      if (trade.tp3) addLine(trade.tp3, THEME.green, `TP3${rrText(trade.tp3)}`, 1, 1);
+
+      const keyLevels = extractKeyLevels(trade.reason, trade.entry_price);
+      keyLevels.forEach(lvl => {
+        addLine(lvl, THEME.yellow, `Key ${Math.round(lvl).toLocaleString()}`, 1, 1);
+      });
+
+      if (entryTs && entryIdx >= 0) {
+        const c = candles[entryIdx];
+        markers.push({
+          time:     c.time,
+          position: isLong ? "belowBar" : "aboveBar",
+          shape:    isLong ? "arrowUp" : "arrowDown",
+          color:    isLong ? THEME.green : THEME.red,
+          size:     2.5,
+          text:     isLong ? "▲ LONG" : "▼ SHORT",
+        });
+      }
+
+      markers.sort((a, b) => a.time - b.time);
+      if (markers.length) markersRef.current = createSeriesMarkers(seriesRef.current, markers);
+
+      const fromTime = candles[from]?.time;
+      const toTime   = candles[to]?.time;
+      if (fromTime && toTime) {
+        chartRef.current.timeScale().setVisibleRange({ from: fromTime, to: toTime });
+      }
+
+    // ── Scene 3: Verloop ─────────────────────────────────────────────────────
+    } else if (sceneId === 3) {
+      addLine(trade.entry_price, THEME.white,
+        `Entry  ${Math.round(trade.entry_price).toLocaleString()}`, 0, 1.5);
+      addLine(trade.stop_loss, THEME.red,
+        `SL  ${Math.round(trade.stop_loss).toLocaleString()}`, 0, 1);
 
       const tpLine = (tp, n, hit) => {
         if (!tp) return;
@@ -143,80 +238,115 @@ export default function SnapshotChart({ trade }) {
           `Exit  ${Math.round(trade.exit_price).toLocaleString()}`, 0, 1.5);
       }
 
-      // ── Markers ──────────────────────────────────────────────────────────
-      const markers = [];
+      if (entryTs && entryIdx >= 0) {
+        const postEntry = candles.slice(entryIdx + 1);
+        const c = candles[entryIdx];
 
-      if (entryTs) {
-        entryTsRef.current = entryTs;
-
-        const entryCandle = candles.reduce((best, c) =>
-          Math.abs(c.time - entryTs) < Math.abs(best.time - entryTs) ? c : best
-        , candles[0]);
-
-        // Entry arrow
         markers.push({
-          time:     entryCandle.time,
+          time:     c.time,
           position: isLong ? "belowBar" : "aboveBar",
-          shape:    isLong ? "arrowUp"  : "arrowDown",
+          shape:    isLong ? "arrowUp" : "arrowDown",
           color:    isLong ? THEME.green : THEME.red,
           size:     2,
           text:     isLong ? "▲ LONG" : "▼ SHORT",
         });
 
-        const entryIdx  = candles.findIndex(c => c.time >= entryTs);
-        const postEntry = entryIdx >= 0 ? candles.slice(entryIdx + 1) : [];
-
-        // TP hit circles — exact candle where price crossed the level
         [[trade.tp1, trade.tp1_hit, 1], [trade.tp2, trade.tp2_hit, 2], [trade.tp3, trade.tp3_hit, 3]]
           .forEach(([tp, hit, n]) => {
             if (!tp || !hit) return;
-            const c = postEntry.find(c => isLong ? c.high >= tp : c.low <= tp);
-            if (c) markers.push({
-              time:     c.time,
+            const found = postEntry.find(x => isLong ? x.high >= tp : x.low <= tp);
+            if (found) markers.push({
+              time:     found.time,
               position: isLong ? "aboveBar" : "belowBar",
               shape:    "circle",
               color:    "#00e5b5",
-              size:     1,
+              size:     1.2,
               text:     `TP${n} ✓`,
             });
           });
 
-        // SL hit circle (only for losing trades)
         if (trade.status === "closed" && trade.realized_pnl < 0 && trade.stop_loss) {
-          const c = postEntry.find(c => isLong ? c.low <= trade.stop_loss : c.high >= trade.stop_loss);
-          if (c) markers.push({
-            time:     c.time,
+          const found = postEntry.find(x => isLong ? x.low <= trade.stop_loss : x.high >= trade.stop_loss);
+          if (found) markers.push({
+            time:     found.time,
             position: isLong ? "belowBar" : "aboveBar",
             shape:    "circle",
             color:    THEME.red,
-            size:     1,
+            size:     1.2,
             text:     "SL ✗",
           });
         }
 
-        // Zoom: 40 candles before entry, 60 after
         markers.sort((a, b) => a.time - b.time);
+        if (markers.length) markersRef.current = createSeriesMarkers(seriesRef.current, markers);
 
-        const from = candles[Math.max(0, entryIdx - 40)].time;
-        const to   = candles[Math.min(candles.length - 1, entryIdx + 60)].time;
-        chartRef.current?.timeScale().setVisibleRange({ from, to });
+        const lastMarkerIdx = candles.findIndex(x => x.time === markers[markers.length - 1]?.time);
+        const toIdx = lastMarkerIdx >= 0
+          ? Math.min(candles.length - 1, lastMarkerIdx + 10)
+          : Math.min(candles.length - 1, entryIdx + 80);
+        const fromTime = candles[Math.max(0, entryIdx - 5)]?.time;
+        const toTime   = candles[toIdx]?.time;
+        if (fromTime && toTime) {
+          chartRef.current.timeScale().setVisibleRange({ from: fromTime, to: toTime });
+        }
       } else {
-        chartRef.current?.timeScale().fitContent();
+        chartRef.current.timeScale().fitContent();
+      }
+    }
+
+    setTimeout(() => computeOverlayRef.current?.(), 80);
+  }, [trade, isLong]);
+
+  // ── Load candles once ─────────────────────────────────────────────────────
+  const loadAndRender = useCallback(async () => {
+    if (!seriesRef.current) return;
+    setLoading(true);
+    setError(null);
+    setOverlay(null);
+
+    try {
+      let candles = null;
+      let entryTs = trade.timestamp
+        ? Math.floor(new Date(trade.timestamp).getTime() / 1000)
+        : null;
+
+      if (trade.id) {
+        try {
+          const res = await fetch(`${API_URL}/trades/${trade.id}/candles`);
+          if (res.ok) {
+            const snap = await res.json();
+            if (snap.candles && snap.candles.length >= 20) {
+              candles = snap.candles.map(c => ({
+                time: c[0], open: c[1], high: c[2], low: c[3], close: c[4],
+              }));
+              if (snap.entry_ts) entryTs = snap.entry_ts;
+              setSource("snapshot");
+            }
+          }
+        } catch { /**/ }
       }
 
-      if (markersRef.current) { markersRef.current.detach(); markersRef.current = null; }
-      if (markers.length) markersRef.current = createSeriesMarkers(seriesRef.current, markers);
+      if (!candles) {
+        const res = await fetch(`${API_URL}/candles?timeframe=15m&limit=500`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        candles = await res.json();
+        setSource("live");
+      }
 
+      if (!candles.length) throw new Error("Geen candles beschikbaar");
+
+      seriesRef.current.setData(candles);
+      candlesRef.current = candles;
+      entryTsRef.current = entryTs;
+
+      renderScene(sceneRef.current);
     } catch (e) {
       setError(e?.message || "Fout bij laden");
     }
     setLoading(false);
+  }, [trade, renderScene]);
 
-    // Overlay coords need the chart to finish rendering first
-    setTimeout(() => computeOverlayRef.current?.(), 120);
-  }, [tf, trade, isLong]);
-
-  // ── Create chart once ──────────────────────────────────────────────────────
+  // ── Create chart once ─────────────────────────────────────────────────────
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -227,7 +357,7 @@ export default function SnapshotChart({ trade }) {
       rightPriceScale: { borderColor: THEME.border },
       timeScale:       { borderColor: THEME.border, timeVisible: true, secondsVisible: false },
       width:           containerRef.current.clientWidth,
-      height:          320,
+      height:          300,
     });
 
     const series = chart.addSeries(CandlestickSeries, {
@@ -239,7 +369,6 @@ export default function SnapshotChart({ trade }) {
     chartRef.current  = chart;
     seriesRef.current = series;
 
-    // Stable callback so the subscription always calls the latest computeOverlay
     const onRangeChange = () => computeOverlayRef.current?.();
     chart.timeScale().subscribeVisibleTimeRangeChange(onRangeChange);
 
@@ -255,53 +384,78 @@ export default function SnapshotChart({ trade }) {
       if (markersRef.current) { markersRef.current.detach(); markersRef.current = null; }
       chart.remove();
       chartRef.current = null; seriesRef.current = null;
+      candlesRef.current = null;
     };
   }, []);
 
-  useEffect(() => { drawChart(); }, [drawChart]);
+  useEffect(() => { loadAndRender(); }, [loadAndRender]);
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  // ── Scene switch ──────────────────────────────────────────────────────────
+  const switchScene = useCallback((id) => {
+    sceneRef.current = id;
+    setScene(id);
+    setOverlay(null);
+    if (candlesRef.current) renderScene(id);
+  }, [renderScene]);
+
+  const sceneLabel = {
+    1: "Marktcontext vóór de trade — swing punten (SH/SL), key niveaus",
+    2: "Entrymoment — SL, TP doelwitten en risk/reward zones",
+    3: "Uitkomst — welke TPs werden geraakt, hoe liep de trade af",
+  }[scene];
+
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div style={{ position: "relative" }}>
-      {/* TF buttons + source indicator */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-        <span style={{ fontSize: 9, fontWeight: 600, color: source === "snapshot" ? "#26a69a" : "#8b92a5" }}>
-          {source === "snapshot" ? "📸 Opgeslagen candles (trade-moment)" : source === "live" ? "⚡ Live candles" : ""}
+      {/* Scene tabs */}
+      <div style={{ display: "flex", gap: 4, marginBottom: 6, alignItems: "center", justifyContent: "space-between" }}>
+        <span style={{ fontSize: 9, color: source === "snapshot" ? "#26a69a" : "#8b92a5", fontWeight: 600 }}>
+          {source === "snapshot" ? "📸 Trade-moment" : source === "live" ? "⚡ Live" : ""}
         </span>
         <div style={{ display: "flex", gap: 4 }}>
-          {TF_OPTIONS.map(t => (
-            <button key={t} className="tf-btn" onClick={() => setTf(t)} style={{
-              padding: "3px 8px", borderRadius: 5, border: "1px solid",
-              fontSize: 9, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
-              background:  t === tf ? "#3b5bdb" : "#f0f2f7",
-              color:       t === tf ? "#fff"    : "#8b92a5",
-              borderColor: t === tf ? "#3b5bdb" : "#e2e5ef",
-            }}>{t.toUpperCase()}</button>
+          {SCENES.map(s => (
+            <button
+              key={s.id}
+              onClick={() => switchScene(s.id)}
+              style={{
+                padding: "4px 10px", borderRadius: 6, border: "1px solid",
+                fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                background:  s.id === scene ? "#3b5bdb" : "#1a1d2e",
+                color:       s.id === scene ? "#fff"    : "#8b92a5",
+                borderColor: s.id === scene ? "#3b5bdb" : "#2a2d3e",
+                transition:  "all 0.15s",
+              }}
+            >
+              {s.emoji} {s.label}
+            </button>
           ))}
         </div>
       </div>
 
-      {/* Chart + overlay in shared clipped container */}
-      <div ref={wrapperRef} style={{ position: "relative", borderRadius: 8, overflow: "hidden" }}>
+      {/* Scene description */}
+      <div style={{
+        fontSize: 9, color: "#8b92a5", marginBottom: 5,
+        padding: "3px 8px", background: "#1a1d2e",
+        borderRadius: 4, borderLeft: "2px solid #3b5bdb",
+      }}>
+        {sceneLabel}
+      </div>
+
+      {/* Chart + overlay wrapper */}
+      <div style={{ position: "relative", borderRadius: 8, overflow: "hidden" }}>
         <div ref={containerRef} />
 
-        {/* ── Zone overlay ── */}
-        {overlay && !loading && (() => {
+        {/* Zone overlay — only scene 2 */}
+        {overlay && !loading && scene === 2 && (() => {
           const { entryY, slY, tpY, entryX } = overlay;
           const showEntry = entryX != null && entryX > 10;
-
-          // Risk zone (entry ↔ SL)
           const riskTop = Math.min(entryY, slY);
           const riskH   = Math.abs(entryY - slY);
-
-          // Reward zone (entry ↔ bestTP)
-          const rewTop = tpY != null ? Math.min(entryY, tpY) : null;
-          const rewH   = tpY != null ? Math.abs(entryY - tpY) : 0;
+          const rewTop  = tpY != null ? Math.min(entryY, tpY) : null;
+          const rewH    = tpY != null ? Math.abs(entryY - tpY) : 0;
 
           return (
             <div style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
-
-              {/* Reward zone — green */}
               {showEntry && rewTop != null && (
                 <div style={{
                   position: "absolute",
@@ -313,8 +467,6 @@ export default function SnapshotChart({ trade }) {
                   borderBottom: isLong ? "1px solid rgba(38,166,154,0.35)" : "none",
                 }} />
               )}
-
-              {/* Risk zone — red */}
               {showEntry && (
                 <div style={{
                   position: "absolute",
@@ -326,8 +478,6 @@ export default function SnapshotChart({ trade }) {
                   borderBottom: isLong ? "none" : "1px solid rgba(239,83,80,0.35)",
                 }} />
               )}
-
-              {/* Entry vertical divider */}
               {showEntry && (
                 <div style={{
                   position: "absolute",
@@ -335,27 +485,37 @@ export default function SnapshotChart({ trade }) {
                   background: "rgba(255,255,255,0.18)",
                 }} />
               )}
-
-              {/* "◀ Setup context" / "Uitkomst ▶" labels */}
-              {entryX != null && entryX > 90 && (
-                <>
-                  <div style={{
-                    position: "absolute", left: 6, top: 6,
-                    fontSize: 8, fontWeight: 700, letterSpacing: 0.8,
-                    textTransform: "uppercase", color: "rgba(139,146,165,0.5)",
-                  }}>◀ Setup</div>
-                  <div style={{
-                    position: "absolute", left: entryX + 6, top: 6,
-                    fontSize: 8, fontWeight: 700, letterSpacing: 0.8,
-                    textTransform: "uppercase", color: "rgba(139,146,165,0.5)",
-                  }}>Uitkomst ▶</div>
-                </>
-              )}
             </div>
           );
         })()}
 
-        {/* Loading / error */}
+        {/* Scene 1 legend */}
+        {!loading && scene === 1 && (
+          <div style={{
+            position: "absolute", bottom: 8, left: 8, pointerEvents: "none",
+            display: "flex", gap: 10, fontSize: 8, fontWeight: 700,
+          }}>
+            <span style={{ color: "#9c64ff" }}>● SH = Swing High</span>
+            <span style={{ color: "#64b5f6" }}>● SL = Swing Low</span>
+            <span style={{ color: THEME.yellow }}>— Key niveau</span>
+          </div>
+        )}
+
+        {/* Scene 3 outcome badge */}
+        {!loading && scene === 3 && trade.status === "closed" && (
+          <div style={{
+            position: "absolute", top: 8, right: PRICE_AXIS_W + 4, pointerEvents: "none",
+            background: trade.realized_pnl > 0 ? "rgba(38,166,154,0.25)" : "rgba(239,83,80,0.25)",
+            border: `1px solid ${trade.realized_pnl > 0 ? "#26a69a" : "#ef5350"}`,
+            borderRadius: 4, padding: "2px 7px",
+            fontSize: 10, fontWeight: 700,
+            color: trade.realized_pnl > 0 ? "#26a69a" : "#ef5350",
+          }}>
+            {trade.realized_pnl > 0 ? "✓ WIN" : "✗ LOSS"}&nbsp;
+            {trade.realized_pnl != null ? `$${trade.realized_pnl > 0 ? "+" : ""}${trade.realized_pnl.toFixed(0)}` : ""}
+          </div>
+        )}
+
         {loading && (
           <div style={{
             position: "absolute", inset: 0,
