@@ -1767,10 +1767,41 @@ function LearningStatsPanel() {
 
   if (!data) return null;
   if (data.reviews !== undefined && data.reviews < 5) {
+    const trRev  = data.trade_reviews  ?? data.reviews;
+    const sigRev = data.signal_reviews ?? 0;
+    const total  = data.reviews;
     return (
       <div style={{ background: C.card, borderRadius: 14, padding: 20, boxShadow: C.shadow, marginBottom: 20 }}>
         <SectionLabel>Leermodel</SectionLabel>
-        <div style={{ color: C.muted, fontSize: 12 }}>{data.message || `Nog niet genoeg beoordelingen (${data.reviews}/30)`}</div>
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+            <span style={{ fontSize: 12, color: C.muted }}>Beoordelingen verzameld</span>
+            <span style={{ fontSize: 13, fontWeight: 800, color: total >= 30 ? C.green : C.yellow }}>{total} / 30</span>
+          </div>
+          <div style={{ background: C.border, borderRadius: 99, height: 6, overflow: "hidden" }}>
+            <div style={{
+              height: "100%", borderRadius: 99,
+              width: `${Math.min(100, total / 30 * 100)}%`,
+              background: total >= 30 ? C.green : C.yellow,
+              transition: "width 0.4s ease",
+            }} />
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {trRev > 0 && (
+            <span style={{ fontSize: 11, color: C.muted, background: C.bg, borderRadius: 6, padding: "3px 10px" }}>
+              {trRev} via dashboard
+            </span>
+          )}
+          {sigRev > 0 && (
+            <span style={{ fontSize: 11, color: C.muted, background: C.bg, borderRadius: 6, padding: "3px 10px" }}>
+              {sigRev} via Telegram
+            </span>
+          )}
+        </div>
+        <div style={{ fontSize: 11, color: C.dim, marginTop: 10 }}>
+          Nog {Math.max(0, 30 - total)} beoordelingen nodig voor volledige analyse
+        </div>
       </div>
     );
   }

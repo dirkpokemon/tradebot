@@ -371,10 +371,19 @@ def get_learning_stats():
     with sqlite3.connect(db_path) as c:
         c.row_factory = sqlite3.Row
         rows = c.execute("SELECT * FROM signal_reviews ORDER BY timestamp DESC").fetchall()
+        trade_reviews = c.execute(
+            "SELECT COUNT(*) FROM trades WHERE review_label IS NOT NULL"
+        ).fetchone()[0]
     reviews = [dict(r) for r in rows]
     n = len(reviews)
+    total = n + trade_reviews
     if n < 5:
-        return {"message": f"Niet genoeg data ({n}/30 beoordelingen)", "reviews": n}
+        return {
+            "message": f"Niet genoeg data ({total}/30 beoordelingen — {trade_reviews} via dashboard, {n} via Telegram)",
+            "reviews": total,
+            "trade_reviews": trade_reviews,
+            "signal_reviews": n,
+        }
 
     approved = [r for r in reviews if r['approved']]
     skipped  = [r for r in reviews if not r['approved']]
