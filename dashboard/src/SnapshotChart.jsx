@@ -270,7 +270,7 @@ export default function SnapshotChart({ trade }) {
         </span>
         <div style={{ display: "flex", gap: 4 }}>
           {TF_OPTIONS.map(t => (
-            <button key={t} onClick={() => setTf(t)} style={{
+            <button key={t} className="tf-btn" onClick={() => setTf(t)} style={{
               padding: "3px 8px", borderRadius: 5, border: "1px solid",
               fontSize: 9, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
               background:  t === tf ? "#3b5bdb" : "#f0f2f7",
