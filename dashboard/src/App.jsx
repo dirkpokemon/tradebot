@@ -937,11 +937,6 @@ const RATINGS = [
   { key: "bad",      emoji: "❌", label: "Slecht", color: C.red,    bg: C.redBg   },
 ];
 
-const REASONS = {
-  good:     ["Duidelijke setup", "Goed niveau", "Met de trend", "Perfecte timing", "Goede R:R", "Sterke bevestiging"],
-  marginal: ["Te vroeg", "Te laat", "Niveau net niet", "R:R kon beter", "Slechte timing", "Onduidelijke setup"],
-  bad:      ["Geen duidelijke setup", "Niveau klopte niet", "Slechte R:R", "Tegen de trend", "Vals signaal", "Te klein SL"],
-};
 
 function getLabelDisplay(key) {
   const map = {
@@ -959,45 +954,23 @@ function getLabelDisplay(key) {
 
 function TradeReviewModal({ trade, onClose, onSaved }) {
   const existingRating = ["good","marginal","bad"].includes(trade.review_label) ? trade.review_label : null;
-  const [rating,    setRating]    = useState(existingRating);
-  const [reasons,   setReasons]   = useState(new Set());
-  const [noteText,  setNoteText]  = useState(trade.review_note || "");
-  const [saving,    setSaving]    = useState(false);
-  const [saveErr,   setSaveErr]   = useState(null);
+  const [saved,   setSaved]   = useState(existingRating);
+  const [saving,  setSaving]  = useState(false);
 
-  function toggleReason(r) {
-    setReasons(prev => {
-      const next = new Set(prev);
-      next.has(r) ? next.delete(r) : next.add(r);
-      return next;
-    });
-  }
-
-  async function saveReview() {
-    if (!rating) return;
+  async function quickSave(ratingKey) {
+    if (saving) return;
     setSaving(true);
-    setSaveErr(null);
-    const parts = [];
-    if (reasons.size > 0) parts.push([...reasons].join(", "));
-    if (noteText.trim()) parts.push(noteText.trim());
-    const note = parts.join("\n");
     try {
       const res = await fetch(`${API_URL}/trades/${trade.id}/review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ label: rating, note }),
+        body: JSON.stringify({ label: ratingKey, note: "" }),
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || `HTTP ${res.status}`);
-      }
-      onSaved(trade.id, rating, note);
-      onClose();
-    } catch (e) {
-      setSaveErr(e.message || "Opslaan mislukt");
-    } finally {
-      setSaving(false);
-    }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setSaved(ratingKey);
+      onSaved(trade.id, ratingKey, "");
+      setTimeout(() => onClose(), 700);
+    } catch { /**/ } finally { setSaving(false); }
   }
 
   const isLong  = trade.side === "buy";
@@ -1160,75 +1133,29 @@ function TradeReviewModal({ trade, onClose, onSaved }) {
           <SnapshotChart trade={trade} />
         </div>
 
-        {/* ── Step 1: Rating ── */}
+        {/* ── Één-klik beoordeling ── */}
         <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 1, textTransform: "uppercase", marginBottom: 10 }}>
-          Hoe was deze trade?
+          {saved ? "Beoordeling opgeslagen ✓" : "Hoe was deze trade?"}
         </div>
-        <div className="rating-btn-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 20 }}>
+        <div className="rating-btn-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
           {RATINGS.map(r => {
-            const active = rating === r.key;
+            const active = saved === r.key;
             return (
-              <button key={r.key} onClick={() => { setRating(r.key); setReasons(new Set()); }} style={{
-                padding: "14px 8px", borderRadius: 12, cursor: "pointer", fontFamily: "inherit",
-                border: `2px solid ${active ? r.color : C.border}`,
+              <button key={r.key} onClick={() => quickSave(r.key)} disabled={saving} style={{
+                padding: "16px 8px", borderRadius: 12, cursor: saving ? "wait" : "pointer",
+                fontFamily: "inherit", border: `2px solid ${active ? r.color : C.border}`,
                 background: active ? r.bg : C.card,
                 display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
-                transition: "all 0.15s",
+                transition: "all 0.15s", opacity: saving && !active ? 0.5 : 1,
               }}>
-                <span style={{ fontSize: 22 }}>{r.emoji}</span>
-                <span style={{ fontSize: 12, fontWeight: 800, color: active ? r.color : C.muted }}>{r.label}</span>
+                <span style={{ fontSize: 24 }}>{r.emoji}</span>
+                <span style={{ fontSize: 12, fontWeight: 800, color: active ? r.color : C.muted }}>
+                  {active ? `${r.label} ✓` : r.label}
+                </span>
               </button>
             );
           })}
         </div>
-
-        {/* ── Step 2: Reasons (only after rating selected) ── */}
-        {rating && (
-          <>
-            <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 1, textTransform: "uppercase", marginBottom: 8 }}>
-              Wat was de reden? <span style={{ fontWeight: 400, textTransform: "none" }}>(optioneel, meerdere mogelijk)</span>
-            </div>
-            <div className="reason-chips" style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 18 }}>
-              {REASONS[rating].map(r => {
-                const active = reasons.has(r);
-                const rc = RATINGS.find(x => x.key === rating);
-                return (
-                  <button key={r} onClick={() => toggleReason(r)} style={{
-                    padding: "6px 12px", borderRadius: 20, fontSize: 11, fontWeight: 600, cursor: "pointer",
-                    fontFamily: "inherit", transition: "all 0.12s",
-                    border: `1.5px solid ${active ? rc.color : C.border}`,
-                    background: active ? rc.color + "18" : "#fafbfd",
-                    color: active ? rc.color : C.muted,
-                  }}>
-                    {r}
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* ── Step 3: Note ── */}
-            <textarea
-              placeholder="Extra notitie (optioneel) — wat zag je in de chart?"
-              value={noteText}
-              onChange={e => setNoteText(e.target.value)}
-              style={{
-                width: "100%", minHeight: 56, padding: "8px 12px", borderRadius: 8,
-                border: `1px solid ${C.border}`, background: "#fafbfd", color: C.text,
-                fontFamily: "inherit", fontSize: 11, resize: "vertical", marginBottom: 14,
-                boxSizing: "border-box",
-              }}
-            />
-
-            {saveErr && (
-              <div style={{ color: C.red, fontSize: 11, fontWeight: 600, marginBottom: 8, padding: "6px 10px", background: C.redBg, borderRadius: 6 }}>
-                ⚠ {saveErr}
-              </div>
-            )}
-            <button className="btn-primary" onClick={saveReview} disabled={saving} style={{ width: "100%", padding: "12px", fontSize: 13, borderRadius: 10 }}>
-              {saving ? "Opslaan…" : "Opslaan"}
-            </button>
-          </>
-        )}
       </div>
     </div>
   );
@@ -1957,47 +1884,7 @@ function LearningStatsPanel() {
     fetch(`${API_URL}/learning_stats`).then(r => r.json()).then(setData).catch(() => {});
   }, []);
 
-  if (!data) return null;
-  if (data.reviews !== undefined && data.reviews < 5) {
-    const trRev  = data.trade_reviews  ?? data.reviews;
-    const sigRev = data.signal_reviews ?? 0;
-    const total  = data.reviews;
-    return (
-      <div style={{ background: C.card, borderRadius: 14, padding: 20, boxShadow: C.shadow, marginBottom: 20 }}>
-        <SectionLabel>Leermodel</SectionLabel>
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-            <span style={{ fontSize: 12, color: C.muted }}>Beoordelingen verzameld</span>
-            <span style={{ fontSize: 13, fontWeight: 800, color: total >= 30 ? C.green : C.yellow }}>{total} / 30</span>
-          </div>
-          <div style={{ background: C.border, borderRadius: 99, height: 6, overflow: "hidden" }}>
-            <div style={{
-              height: "100%", borderRadius: 99,
-              width: `${Math.min(100, total / 30 * 100)}%`,
-              background: total >= 30 ? C.green : C.yellow,
-              transition: "width 0.4s ease",
-            }} />
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {trRev > 0 && (
-            <span style={{ fontSize: 11, color: C.muted, background: C.bg, borderRadius: 6, padding: "3px 10px" }}>
-              {trRev} via dashboard
-            </span>
-          )}
-          {sigRev > 0 && (
-            <span style={{ fontSize: 11, color: C.muted, background: C.bg, borderRadius: 6, padding: "3px 10px" }}>
-              {sigRev} via Telegram
-            </span>
-          )}
-        </div>
-        <div style={{ fontSize: 11, color: C.dim, marginTop: 10 }}>
-          Nog {Math.max(0, 30 - total)} beoordelingen nodig voor volledige analyse
-        </div>
-      </div>
-    );
-  }
-  if (!data.factor_comparison) return null;
+  if (!data || !data.factor_comparison) return null;
 
   const factors = Object.entries(data.factor_comparison);
   const topFactors = new Set(data.top_differentiating_factors || []);
@@ -2305,9 +2192,6 @@ export default function Dashboard() {
 
       {/* ── Self-learning proposals ─────────────────────────────────────────── */}
       <LearningPanel />
-
-      {/* ── Learning Stats ──────────────────────────────────────────────────── */}
-      <LearningStatsPanel />
 
       {/* ── Closed trades ──────────────────────────────────────────────────── */}
       <SectionLabel badge={closedTrades.length}>Gesloten trades</SectionLabel>
