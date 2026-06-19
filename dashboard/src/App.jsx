@@ -1163,9 +1163,9 @@ function TradeReviewModal({ trade, onClose, onSaved }) {
 
 function TradeReviewPanel({ closedTrades }) {
   const [reviewTrade, setReviewTrade] = useState(null);
-  const [reviews, setReviews] = useState({});  // trade_id → { label, note }
+  const [reviews, setReviews] = useState({});
+  const [saving, setSaving] = useState({});
 
-  // Load existing reviews from the trades list
   useEffect(() => {
     const existing = {};
     closedTrades.forEach(t => {
@@ -1178,10 +1178,24 @@ function TradeReviewPanel({ closedTrades }) {
     setReviews(prev => ({ ...prev, [id]: { label, note } }));
   }
 
-  const pending   = closedTrades.filter(t => !reviews[t.id]);
-  const done      = closedTrades.filter(t =>  reviews[t.id]);
+  async function quickRate(e, trade, ratingKey) {
+    e.stopPropagation();
+    setSaving(prev => ({ ...prev, [trade.id]: true }));
+    try {
+      const res = await fetch(`${API_URL}/trades/${trade.id}/review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label: ratingKey, note: "" }),
+      });
+      if (res.ok) handleSaved(trade.id, ratingKey, "");
+    } catch { /**/ } finally {
+      setSaving(prev => ({ ...prev, [trade.id]: false }));
+    }
+  }
 
-  // Summary: per label, count and win/loss
+  const pending = closedTrades.filter(t => !reviews[t.id]);
+  const done    = closedTrades.filter(t =>  reviews[t.id]);
+
   const summary = {};
   done.forEach(t => {
     const lbl = reviews[t.id]?.label;
@@ -1199,7 +1213,6 @@ function TradeReviewPanel({ closedTrades }) {
         <EmptyState icon="🔍" text="Nog geen gesloten trades om te beoordelen" height={80} />
       )}
 
-      {/* Label summary */}
       {done.length > 0 && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 18 }}>
           {Object.entries(summary).map(([key, s]) => {
@@ -1218,40 +1231,54 @@ function TradeReviewPanel({ closedTrades }) {
         </div>
       )}
 
-      {/* Trade list */}
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {[...closedTrades].reverse().map(t => {
-          const rv = reviews[t.id];
+          const rv     = reviews[t.id];
           const pnlPos = t.realized_pnl >= 0;
+          const busy   = saving[t.id];
           return (
-            <div key={t.id} className="review-list-item" onClick={() => setReviewTrade(t)} style={{
+            <div key={t.id} style={{
               display: "flex", alignItems: "center", gap: 10,
-              padding: "14px 16px", borderRadius: 10, cursor: "pointer",
+              padding: "12px 14px", borderRadius: 10,
               background: rv ? "#fafbfd" : "#fffdf5",
               border: `1px solid ${rv ? C.border : C.yellow + "44"}`,
-              WebkitTapHighlightColor: "transparent",
             }}>
-              <span style={{ fontSize: 13, fontWeight: 700, color: t.side === "buy" ? C.green : C.red }}>
-                {t.side === "buy" ? "▲" : "▼"}
-              </span>
-              <div style={{ flex: 1, minWidth: 0 }}>
+              {/* Trade info — click to open chart modal */}
+              <div onClick={() => setReviewTrade(t)} style={{ flex: 1, minWidth: 0, cursor: "pointer" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: t.side === "buy" ? C.green : C.red }}>
+                    {t.side === "buy" ? "▲" : "▼"}
+                  </span>
                   <Tag color={C.blue} bg={C.blueBg}>{t.setup_type?.replace("_", " ")}</Tag>
                   <span style={{ fontSize: 11, fontWeight: 700, color: pnlPos ? C.green : C.red }}>
                     {pnlPos ? "+" : ""}{fmt(t.realized_pnl)} USDT
                   </span>
                 </div>
-                <div style={{ fontSize: 10, color: C.muted }}>{t.timestamp?.slice(0, 16).replace("T", " ")}</div>
+                <div style={{ fontSize: 10, color: C.muted }}>{t.timestamp?.slice(0, 16).replace("T", " ")} · 📊 chart</div>
               </div>
-              <div style={{ textAlign: "right", flexShrink: 0 }}>
-                {rv ? (
-                  <span style={{ fontSize: 11, color: getLabelDisplay(rv.label).color, fontWeight: 700 }}>{getLabelDisplay(rv.label).emoji} {getLabelDisplay(rv.label).label}</span>
-                ) : (
-                  <span style={{
-                    fontSize: 10, padding: "4px 10px", borderRadius: 6, fontWeight: 700,
-                    background: C.blueBg, color: C.blue, border: `1px solid ${C.blue}33`,
-                  }}>Beoordeel →</span>
-                )}
+
+              {/* Inline rating buttons */}
+              <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                {RATINGS.map(r => {
+                  const active = rv?.label === r.key;
+                  return (
+                    <button
+                      key={r.key}
+                      onClick={e => quickRate(e, t, r.key)}
+                      disabled={busy}
+                      title={r.label}
+                      style={{
+                        width: 36, height: 36, borderRadius: 8, border: `2px solid ${active ? r.color : C.border}`,
+                        background: active ? r.bg : C.card,
+                        fontSize: 16, cursor: busy ? "wait" : "pointer",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        transition: "all 0.12s", opacity: busy ? 0.5 : 1,
+                      }}
+                    >
+                      {r.emoji}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           );
