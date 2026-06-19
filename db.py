@@ -62,6 +62,32 @@ CREATE TABLE IF NOT EXISTS pending_signals (
 );
 """
 
+_CREATE_LEARNING_PROPOSALS = """
+CREATE TABLE IF NOT EXISTS learning_proposals (
+    id           TEXT PRIMARY KEY,
+    type         TEXT,
+    setup_type   TEXT,
+    description  TEXT,
+    current_value TEXT,
+    proposed_value TEXT,
+    reasoning    TEXT,
+    win_rate_before REAL,
+    win_rate_after  REAL,
+    sample_size  INTEGER,
+    status       TEXT DEFAULT 'pending',
+    created_at   TEXT,
+    decided_at   TEXT
+);
+"""
+
+_CREATE_LEARNED_PARAMS = """
+CREATE TABLE IF NOT EXISTS learned_params (
+    key        TEXT PRIMARY KEY,
+    value      TEXT,
+    updated_at TEXT
+);
+"""
+
 _CREATE_SIGNAL_REVIEWS = """
 CREATE TABLE IF NOT EXISTS signal_reviews (
     id           TEXT PRIMARY KEY,
@@ -100,6 +126,8 @@ def init_db():
         c.execute(_CREATE_TABLE)
         c.execute(_CREATE_PENDING_SIGNALS)
         c.execute(_CREATE_SIGNAL_REVIEWS)
+        c.execute(_CREATE_LEARNING_PROPOSALS)
+        c.execute(_CREATE_LEARNED_PARAMS)
         for sql in _MIGRATIONS:
             try:
                 c.execute(sql)
@@ -269,3 +297,89 @@ def save_signal_review(signal_id: str, setup_type: str, side: str, approved: boo
             breakdown.get('inside_doji', 0),
             datetime.utcnow().isoformat()
         ))
+
+
+def save_learning_proposals(proposals: list[dict]):
+    """Save new proposals, replacing any existing pending proposal of the same type+setup."""
+    import json
+    with _conn() as c:
+        for p in proposals:
+            # Remove old pending proposal of same type+setup
+            c.execute(
+                "DELETE FROM learning_proposals WHERE type=? AND (setup_type=? OR (setup_type IS NULL AND ? IS NULL)) AND status='pending'",
+                (p["type"], p.get("setup_type"), p.get("setup_type"))
+            )
+            c.execute("""
+                INSERT INTO learning_proposals
+                (id, type, setup_type, description, current_value, proposed_value,
+                 reasoning, win_rate_before, win_rate_after, sample_size, status, created_at, decided_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                p["id"], p["type"], p.get("setup_type"),
+                p["description"],
+                json.dumps(p["current_value"]), json.dumps(p["proposed_value"]),
+                p["reasoning"],
+                p.get("win_rate_before"), p.get("win_rate_after"),
+                p.get("sample_size"), p.get("status", "pending"),
+                p.get("created_at"), p.get("decided_at"),
+            ))
+
+
+def get_learning_proposals(status: str = None) -> list[dict]:
+    import json
+    with _conn() as c:
+        c.row_factory = sqlite3.Row
+        if status:
+            rows = c.execute(
+                "SELECT * FROM learning_proposals WHERE status=? ORDER BY created_at DESC",
+                (status,)
+            ).fetchall()
+        else:
+            rows = c.execute(
+                "SELECT * FROM learning_proposals ORDER BY created_at DESC"
+            ).fetchall()
+    result = []
+    for r in rows:
+        d = dict(r)
+        try: d["current_value"] = json.loads(d["current_value"])
+        except: pass
+        try: d["proposed_value"] = json.loads(d["proposed_value"])
+        except: pass
+        result.append(d)
+    return result
+
+
+def decide_proposal(proposal_id: str, decision: str):
+    """Accept or reject a proposal. decision: 'accepted' | 'rejected'"""
+    from datetime import datetime
+    with _conn() as c:
+        c.execute(
+            "UPDATE learning_proposals SET status=?, decided_at=? WHERE id=?",
+            (decision, datetime.utcnow().isoformat(), proposal_id)
+        )
+
+
+def get_learned_params() -> dict:
+    """Return all currently active learned parameters as {key: value}."""
+    import json
+    try:
+        with _conn() as c:
+            rows = c.execute("SELECT key, value FROM learned_params").fetchall()
+        return {r[0]: json.loads(r[1]) for r in rows}
+    except Exception:
+        return {}
+
+
+def set_learned_param(key: str, value):
+    import json
+    from datetime import datetime
+    with _conn() as c:
+        c.execute(
+            "INSERT OR REPLACE INTO learned_params (key, value, updated_at) VALUES (?,?,?)",
+            (key, json.dumps(value), datetime.utcnow().isoformat())
+        )
+
+
+def delete_learned_param(key: str):
+    with _conn() as c:
+        c.execute("DELETE FROM learned_params WHERE key=?", (key,))

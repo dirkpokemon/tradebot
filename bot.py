@@ -9,6 +9,7 @@ from dataclasses import dataclass, field, asdict
 
 from strategy import analyze, Signal, get_swing_points, calc_atr, get_last_analysis
 from db import init_db, save_trade, update_trade, load_trades, clear_trades as db_clear_trades
+from db import get_learned_params, save_learning_proposals, set_learned_param
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
@@ -73,6 +74,39 @@ class BotState:
     last_analysis: dict = field(default_factory=dict)
 
 state = BotState()
+
+
+def _get_learned_analyze_kwargs() -> dict:
+    """Load active learned params and return kwargs for analyze()."""
+    try:
+        params = get_learned_params()
+        result = {}
+        if "min_score_global" in params:
+            result["min_score_override"] = params["min_score_global"]
+        if "setup_min_scores" in params:
+            result["setup_min_scores"] = params["setup_min_scores"]
+        # Merge learned disabled setups with state disabled setups
+        learned_disabled = params.get("disabled_setups", [])
+        result["disabled_setups"] = list(set(state.disabled_setups + learned_disabled))
+        return result
+    except Exception:
+        return {"disabled_setups": state.disabled_setups}
+
+
+def _maybe_run_learning():
+    """Trigger learning analysis after every 10 new closed trades (min 30 total)."""
+    try:
+        closed_count = sum(1 for t in state.trades if t.status == "closed")
+        if closed_count < 30 or closed_count % 10 != 0:
+            return
+        from learn import analyze_for_proposals
+        proposals = analyze_for_proposals(min_trades=30)
+        if proposals:
+            save_learning_proposals(proposals)
+            logger.info(f"Leeranalyse: {len(proposals)} nieuwe voorstellen opgeslagen")
+    except Exception as e:
+        logger.warning(f"Leeranalyse mislukt: {e}")
+
 
 def _record_equity():
     snap = (state.sim_balance + state.total_pnl) if state.sim_mode else state.equity

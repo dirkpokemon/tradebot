@@ -9,7 +9,10 @@ import requests
 import sqlite3
 from bot import state, run_bot, get_setup_health, SETUP_TYPES, get_public_exchange, get_exchange
 from dataclasses import asdict
-from db import clear_trades as db_clear_trades, get_trade_candles, save_review, load_reviews_summary
+from db import (clear_trades as db_clear_trades, get_trade_candles, save_review, load_reviews_summary,
+                get_learning_proposals, save_learning_proposals, decide_proposal,
+                get_learned_params, set_learned_param, delete_learned_param)
+from learn import analyze_for_proposals
 from backtest import (
     BacktestConfig, backtest_state, run_backtest,
     monte_carlo_state, run_monte_carlo,
@@ -422,6 +425,67 @@ def get_learning_stats():
         "top_differentiating_factors": [s[0] for s in suggestions[:3]],
         "ready_for_learning": n >= 30,
     }
+
+
+# ── Self-learning endpoints ───────────────────────────────────────────────────
+
+@app.get("/learning/proposals")
+def get_proposals():
+    proposals = get_learning_proposals()
+    return {"proposals": proposals, "pending": sum(1 for p in proposals if p["status"] == "pending")}
+
+
+@app.post("/learning/analyze")
+def trigger_analysis():
+    closed = sum(1 for t in state.trades if t.status == "closed")
+    proposals = analyze_for_proposals(min_trades=30)
+    if not proposals:
+        return {"message": f"Niet genoeg data: {closed} gesloten trades (minimaal 30 nodig)", "proposals": 0}
+    save_learning_proposals(proposals)
+    return {"message": f"{len(proposals)} nieuwe voorstellen gegenereerd uit {closed} trades", "proposals": len(proposals)}
+
+
+@app.post("/learning/proposals/{proposal_id}/accept")
+def accept_proposal(proposal_id: str):
+    proposals = get_learning_proposals()
+    p = next((x for x in proposals if x["id"] == proposal_id), None)
+    if not p:
+        raise HTTPException(status_code=404, detail="Voorstel niet gevonden")
+    if p["status"] != "pending":
+        raise HTTPException(status_code=400, detail=f"Voorstel heeft al status: {p['status']}")
+    ptype = p["type"]
+    if ptype == "min_score_global":
+        set_learned_param("min_score_global", p["proposed_value"])
+    elif ptype == "disable_setup":
+        params = get_learned_params()
+        disabled = params.get("disabled_setups", [])
+        if p["setup_type"] not in disabled:
+            disabled.append(p["setup_type"])
+        set_learned_param("disabled_setups", disabled)
+        if p["setup_type"] not in state.disabled_setups:
+            state.disabled_setups.append(p["setup_type"])
+    elif ptype == "min_score_setup":
+        params = get_learned_params()
+        scores = params.get("setup_min_scores", {})
+        scores[p["setup_type"]] = p["proposed_value"]
+        set_learned_param("setup_min_scores", scores)
+    decide_proposal(proposal_id, "accepted")
+    return {"message": f"Toegepast: {p['description']}", "type": ptype}
+
+
+@app.post("/learning/proposals/{proposal_id}/reject")
+def reject_proposal(proposal_id: str):
+    proposals = get_learning_proposals()
+    p = next((x for x in proposals if x["id"] == proposal_id), None)
+    if not p:
+        raise HTTPException(status_code=404, detail="Voorstel niet gevonden")
+    decide_proposal(proposal_id, "rejected")
+    return {"message": f"Afgewezen: {p['description']}"}
+
+
+@app.get("/learning/params")
+def get_active_params():
+    return {"params": get_learned_params()}
 
 
 # ── SPA static files (dashboard/dist, built by nixpacks) ─────────────────────

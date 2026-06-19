@@ -657,7 +657,9 @@ def analyze(candles_15m: list, candles_1h: list, cooldown_candles: int = 0,
             session_filter: bool = False,
             disabled_setups: list = None,
             scalp_mode: bool = False,
-            min_cooldown_candles: int = 2) -> Optional[Signal]:
+            min_cooldown_candles: int = 2,
+            min_score_override=None,
+            setup_min_scores=None) -> Optional[Signal]:
     """
     Analyseer de markt op Rotation en Continuation.
     4H en 1H geven score-bonus maar blokkeren nooit — beide richtingen zijn altijd tradeable.
@@ -839,6 +841,11 @@ def analyze(candles_15m: list, candles_1h: list, cooldown_candles: int = 0,
             min_score = 45
         else:
             min_score = 55  # ranging of counter-trend: hogere lat (maar niet geblokkeerd)
+        # Apply learned parameter overrides
+        if min_score_override is not None:
+            min_score = max(min_score, int(min_score_override))
+        if setup_min_scores and signal and signal.setup_type in setup_min_scores:
+            min_score = max(min_score, int(setup_min_scores[signal.setup_type]))
         if ctx['score'] < min_score:
             logger.info(
                 f"Signal afgewezen: context score te laag ({ctx['score']}/{min_score} vereist"

@@ -1758,6 +1758,198 @@ const REJECTION_LABELS = {
   unknown:       "Onbekend",
 };
 
+// ── Self-learning proposals panel ────────────────────────────────────────────
+function LearningPanel() {
+  const [data, setData]         = useState(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [msg, setMsg]           = useState(null);
+  const [showHistory, setShowHistory] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_URL}/learning/proposals`);
+      if (res.ok) setData(await res.json());
+    } catch { /**/ }
+  }, []);
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 30000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  const runAnalysis = async () => {
+    setAnalyzing(true); setMsg(null);
+    try {
+      const res  = await fetch(`${API_URL}/learning/analyze`, { method: "POST" });
+      const json = await res.json();
+      setMsg(json.message);
+      load();
+    } finally { setAnalyzing(false); }
+  };
+
+  const decide = async (id, action) => {
+    setMsg(null);
+    const res  = await fetch(`${API_URL}/learning/proposals/${id}/${action}`, { method: "POST" });
+    const json = await res.json();
+    setMsg(json.message);
+    load();
+  };
+
+  const pending  = data?.proposals?.filter(p => p.status === "pending")  ?? [];
+  const decided  = data?.proposals?.filter(p => p.status !== "pending")  ?? [];
+
+  const typeLabel = {
+    min_score_global: "Min. score",
+    disable_setup:    "Setup uitschakelen",
+    min_score_setup:  "Setup-score",
+  };
+
+  const ProposalCard = ({ p }) => {
+    const isPending  = p.status === "pending";
+    const isAccepted = p.status === "accepted";
+    const borderCol  = isPending ? C.yellow : isAccepted ? C.green : C.dim;
+
+    return (
+      <div style={{
+        background: C.bg, borderRadius: 10, padding: "14px 16px", marginBottom: 10,
+        border: `1px solid ${borderCol}`, borderLeft: `3px solid ${borderCol}`,
+      }}>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 6 }}>
+          <div>
+            <span style={{
+              display: "inline-block", fontSize: 9, fontWeight: 700, textTransform: "uppercase",
+              background: C.blueBg, color: C.blue, borderRadius: 4, padding: "1px 6px", marginBottom: 4,
+            }}>
+              {typeLabel[p.type] || p.type}
+            </span>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{p.description}</div>
+          </div>
+          {!isPending && (
+            <span style={{
+              fontSize: 9, fontWeight: 800, textTransform: "uppercase",
+              color: isAccepted ? C.green : C.muted,
+              background: isAccepted ? C.greenBg : "#f0f0f0",
+              borderRadius: 4, padding: "2px 7px", whiteSpace: "nowrap",
+            }}>
+              {isAccepted ? "✓ Toegepast" : "✗ Afgewezen"}
+            </span>
+          )}
+        </div>
+
+        <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.55, marginBottom: 10 }}>
+          {p.reasoning}
+        </div>
+
+        {/* Stats row */}
+        <div style={{ display: "flex", gap: 16, marginBottom: isPending ? 12 : 0 }}>
+          <div>
+            <div style={{ fontSize: 8, color: C.dim, textTransform: "uppercase", letterSpacing: 0.8 }}>Samples</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{p.sample_size}</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 8, color: C.dim, textTransform: "uppercase", letterSpacing: 0.8 }}>Win rate nu</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.red }}>
+              {p.win_rate_before != null ? `${Math.round(p.win_rate_before * 100)}%` : "—"}
+            </div>
+          </div>
+          {p.win_rate_after != null && (
+            <div>
+              <div style={{ fontSize: 8, color: C.dim, textTransform: "uppercase", letterSpacing: 0.8 }}>Win rate na</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.green }}>
+                {Math.round(p.win_rate_after * 100)}%
+              </div>
+            </div>
+          )}
+          <div>
+            <div style={{ fontSize: 8, color: C.dim, textTransform: "uppercase", letterSpacing: 0.8 }}>Huidig → Nieuw</div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.blue }}>
+              {JSON.stringify(p.current_value)} → {JSON.stringify(p.proposed_value)}
+            </div>
+          </div>
+        </div>
+
+        {isPending && (
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => decide(p.id, "accept")} style={{
+              flex: 1, padding: "8px 0", borderRadius: 7, border: "none",
+              background: C.green, color: "#fff", fontWeight: 700, fontSize: 12, cursor: "pointer",
+            }}>
+              ✓ Toepassen
+            </button>
+            <button onClick={() => decide(p.id, "reject")} style={{
+              flex: 1, padding: "8px 0", borderRadius: 7, border: `1px solid ${C.border}`,
+              background: C.bg, color: C.muted, fontWeight: 700, fontSize: 12, cursor: "pointer",
+            }}>
+              ✗ Negeren
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ background: C.card, borderRadius: 14, padding: 20, boxShadow: C.shadow, marginBottom: 20 }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+        <div>
+          <SectionLabel>🧠 Bot leerrapport</SectionLabel>
+          <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+            Na 30+ gesloten trades analyseert de bot zichzelf en stelt aanpassingen voor.
+          </div>
+        </div>
+        <button onClick={runAnalysis} disabled={analyzing} style={{
+          padding: "7px 14px", borderRadius: 8, border: `1px solid ${C.border}`,
+          background: analyzing ? C.bg : C.blue, color: analyzing ? C.muted : "#fff",
+          fontWeight: 700, fontSize: 11, cursor: analyzing ? "not-allowed" : "pointer",
+        }}>
+          {analyzing ? "Analyseren…" : "🔍 Analyseer nu"}
+        </button>
+      </div>
+
+      {msg && (
+        <div style={{
+          fontSize: 11, color: C.blue, background: C.blueBg, borderRadius: 6,
+          padding: "8px 12px", marginBottom: 14, border: `1px solid ${C.border}`,
+        }}>
+          {msg}
+        </div>
+      )}
+
+      {/* Pending proposals */}
+      {pending.length === 0 ? (
+        <div style={{
+          textAlign: "center", padding: "24px 0", color: C.muted, fontSize: 12,
+          background: C.bg, borderRadius: 10, border: `1px dashed ${C.border}`,
+        }}>
+          {data === null ? "Laden…" : "Geen nieuwe voorstellen — klik 'Analyseer nu' om te starten."}
+        </div>
+      ) : (
+        <>
+          <div style={{ fontSize: 10, fontWeight: 700, color: C.yellow, textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 10 }}>
+            ⚠ {pending.length} voorstel{pending.length > 1 ? "len" : ""} wacht{pending.length === 1 ? "" : "en"} op jouw beslissing
+          </div>
+          {pending.map(p => <ProposalCard key={p.id} p={p} />)}
+        </>
+      )}
+
+      {/* History toggle */}
+      {decided.length > 0 && (
+        <div>
+          <button onClick={() => setShowHistory(h => !h)} style={{
+            background: "none", border: "none", cursor: "pointer",
+            fontSize: 11, color: C.muted, padding: "4px 0", fontFamily: "inherit",
+          }}>
+            {showHistory ? "▲" : "▼"} Geschiedenis ({decided.length})
+          </button>
+          {showHistory && decided.map(p => <ProposalCard key={p.id} p={p} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LearningStatsPanel() {
   const [data, setData] = useState(null);
 
@@ -2110,6 +2302,9 @@ export default function Dashboard() {
 
       {/* ── Trade Review ────────────────────────────────────────────────────── */}
       <TradeReviewPanel closedTrades={closedTrades} />
+
+      {/* ── Self-learning proposals ─────────────────────────────────────────── */}
+      <LearningPanel />
 
       {/* ── Learning Stats ──────────────────────────────────────────────────── */}
       <LearningStatsPanel />
