@@ -472,9 +472,12 @@ def manage_open_trades(exchange, candles_15m, curr_price: float = None):
 
 SETUP_TYPES = ['rotation', 'continuation']
 HEALTH_WINDOW      = 20   # aantal recente trades per setup om te beoordelen
-DISABLE_THRESHOLD  = 0.40 # win rate onder deze grens → disable
-RECOVERY_THRESHOLD = 0.50 # win rate boven deze grens → re-enable
+DISABLE_THRESHOLD  = 0.40 # win rate onder deze grens → waarschuwing
+RECOVERY_THRESHOLD = 0.50 # win rate boven deze grens → waarschuwing opgeheven
 MIN_TRADES_TO_JUDGE = 10  # minimaal nodig voordat we een oordeel vellen
+
+# Setups waarvoor al een "verslechtert"-waarschuwing is verstuurd (voorkomt spam).
+_degraded_warned: set = set()
 
 
 def get_setup_health(setup: str) -> dict:
@@ -503,33 +506,33 @@ def get_setup_health(setup: str) -> dict:
 
 def _update_setup_health():
     """
-    Controleer na elke gesloten trade of een setup gedegradeerd of hersteld is.
-    Schakelt automatisch uit bij win rate < 40% (≥10 trades) en weer in bij ≥50%.
+    Bewaakt de gezondheid van elke setup en stuurt een waarschuwing bij verslechtering.
+
+    Schakelt setups NIET meer automatisch uit. Er zijn maar twee kernsetups
+    (rotation, continuation); één daarvan automatisch uitzetten legt de bot grotendeels
+    stil. Bovendien kon een uitgeschakelde setup zichzelf nooit herstellen — hij nam
+    geen trades meer, dus de win rate bleef bevroren onder de drempel (deadlock).
+
+    Uitschakelen verloopt nu uitsluitend via het leerrapport, waar jij per voorstel
+    beslist. De gezondheidsstatus (healthy/degrading) blijft zichtbaar op het dashboard.
     """
     for setup in SETUP_TYPES:
         health = get_setup_health(setup)
-        n = health['trades']
+        n  = health['trades']
         wr = health['win_rate']
-        currently_disabled = setup in state.disabled_setups
+        if wr is None:
+            continue
 
-        if not currently_disabled and wr is not None and n >= MIN_TRADES_TO_JUDGE and wr < DISABLE_THRESHOLD:
-            state.disabled_setups.append(setup)
-            msg = (
-                f"⚠️ <b>SETUP UITGESCHAKELD: {setup.upper()}</b>\n"
+        if n >= MIN_TRADES_TO_JUDGE and wr < DISABLE_THRESHOLD and setup not in _degraded_warned:
+            _degraded_warned.add(setup)
+            logger.warning(f"Setup {setup} verslechtert: win rate {wr*100:.0f}% over {n} trades")
+            send_telegram(
+                f"⚠️ <b>SETUP VERSLECHTERT: {setup.upper()}</b>\n"
                 f"Win rate laatste {n} trades: {wr*100:.0f}% (drempel: {DISABLE_THRESHOLD*100:.0f}%)\n"
-                f"Setup hervat automatisch zodra win rate ≥{RECOVERY_THRESHOLD*100:.0f}%"
+                f"De setup blijft actief. Bekijk het leerrapport voor een eventueel voorstel."
             )
-            logger.warning(f"Setup {setup} uitgeschakeld: win rate {wr*100:.0f}%")
-            send_telegram(msg)
-
-        elif currently_disabled and wr is not None and wr >= RECOVERY_THRESHOLD:
-            state.disabled_setups.remove(setup)
-            msg = (
-                f"✅ <b>SETUP HERSTELD: {setup.upper()}</b>\n"
-                f"Win rate laatste {n} trades: {wr*100:.0f}% — setup weer actief"
-            )
-            logger.info(f"Setup {setup} hersteld: win rate {wr*100:.0f}%")
-            send_telegram(msg)
+        elif wr >= RECOVERY_THRESHOLD:
+            _degraded_warned.discard(setup)
 
 
 def _check_open_trades_live(exchange):
@@ -569,6 +572,20 @@ def run_bot():
             if t.status == "closed":
                 state.total_pnl += t.realized_pnl
         logger.info(f"{len(saved_trades)} trades hersteld uit database")
+
+    # Kernsetups (rotation, continuation) nooit uitgeschakeld laten staan: het zijn de
+    # enige twee setups, dus uitschakelen legt de bot stil. Verwijder ze uit een eerder
+    # opgebouwde (auto- of geleerde) disable-lijst zodat de bot altijd kan blijven traden.
+    state.disabled_setups = [s for s in state.disabled_setups if s not in SETUP_TYPES]
+    try:
+        learned_disabled = get_learned_params().get('disabled_setups', [])
+        cleaned = [s for s in learned_disabled if s not in SETUP_TYPES]
+        if cleaned != learned_disabled:
+            set_learned_param('disabled_setups', cleaned)
+            removed = set(learned_disabled) - set(cleaned)
+            logger.info(f"Kernsetups uit geleerde disable-lijst verwijderd: {', '.join(removed)}")
+    except Exception as e:
+        logger.warning(f"Kon geleerde disable-lijst niet opschonen: {e}")
 
     exchange = get_public_exchange() if state.sim_mode else get_exchange()
     logger.info(f"DoopieCash Bot gestart | {state.symbol} | {mode_label}")

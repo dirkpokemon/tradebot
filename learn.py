@@ -119,8 +119,16 @@ def _analyze_global_threshold(trades, min_sample=10):
     }
 
 
+# Kernsetups die nooit hard uitgeschakeld mogen worden: het zijn de enige twee
+# actieve setups, dus uitschakelen legt de bot stil. Onderprestatie wordt opgevangen
+# door de score-drempel te verhogen (_analyze_setup_threshold), niet door te disablen.
+_CORE_SETUPS = {"rotation", "continuation"}
+
+
 def _analyze_setup_disable(trades, setup_type, min_trades=12):
     """Propose disabling a setup if win rate is structurally bad."""
+    if setup_type in _CORE_SETUPS:
+        return None
     setup_trades = [t for t in trades if t.get("setup_type") == setup_type]
     if len(setup_trades) < min_trades:
         return None
