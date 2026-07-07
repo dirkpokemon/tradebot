@@ -438,9 +438,15 @@ def get_proposals():
 @app.post("/learning/analyze")
 def trigger_analysis():
     closed = sum(1 for t in state.trades if t.status == "closed")
+    if closed < 30:
+        return {"message": f"Niet genoeg data: {closed} gesloten trades (minimaal 30 nodig)", "proposals": 0}
     proposals = analyze_for_proposals(min_trades=30)
     if not proposals:
-        return {"message": f"Niet genoeg data: {closed} gesloten trades (minimaal 30 nodig)", "proposals": 0}
+        return {
+            "message": (f"Analyse voltooid over {closed} trades: geen verbetervoorstellen. "
+                        f"De bot presteert op de gemeten punten (richting, modus, score) al goed genoeg."),
+            "proposals": 0,
+        }
     save_learning_proposals(proposals)
     return {"message": f"{len(proposals)} nieuwe voorstellen gegenereerd uit {closed} trades", "proposals": len(proposals)}
 
@@ -469,6 +475,12 @@ def accept_proposal(proposal_id: str):
         scores = params.get("setup_min_scores", {})
         scores[p["setup_type"]] = p["proposed_value"]
         set_learned_param("setup_min_scores", scores)
+    elif ptype == "trade_direction":
+        set_learned_param("trade_direction", p["proposed_value"])
+        state.trade_direction = p["proposed_value"]
+    elif ptype == "trade_mode":
+        set_learned_param("trade_mode", p["proposed_value"])
+        state.trade_mode = p["proposed_value"]
     decide_proposal(proposal_id, "accepted")
     return {"message": f"Toegepast: {p['description']}", "type": ptype}
 

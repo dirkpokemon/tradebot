@@ -587,6 +587,18 @@ def run_bot():
     except Exception as e:
         logger.warning(f"Kon geleerde disable-lijst niet opschonen: {e}")
 
+    # Geleerde en goedgekeurde richting/modus toepassen (overschrijft de env-default).
+    try:
+        _lp = get_learned_params()
+        if _lp.get('trade_direction') in ('both', 'long_only', 'short_only'):
+            state.trade_direction = _lp['trade_direction']
+            logger.info(f"Geleerde richting toegepast: {state.trade_direction}")
+        if _lp.get('trade_mode') in ('daytrade', 'scalp', 'both'):
+            state.trade_mode = _lp['trade_mode']
+            logger.info(f"Geleerde modus toegepast: {state.trade_mode}")
+    except Exception as e:
+        logger.warning(f"Kon geleerde richting/modus niet toepassen: {e}")
+
     exchange = get_public_exchange() if state.sim_mode else get_exchange()
     logger.info(f"DoopieCash Bot gestart | {state.symbol} | {mode_label}")
 

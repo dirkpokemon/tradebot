@@ -1334,6 +1334,8 @@ function LearningPanel() {
     min_score_global: "Min. score",
     disable_setup:    "Setup uitschakelen",
     min_score_setup:  "Setup-score",
+    trade_direction:  "Richting",
+    trade_mode:       "Handelsmodus",
   };
 
   const ProposalCard = ({ p }) => {
