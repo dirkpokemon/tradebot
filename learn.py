@@ -76,118 +76,122 @@ def _avg_pnl(trades):
     return sum((t.get("realized_pnl") or 0) for t in trades) / len(trades)
 
 
-def _analyze_direction(trades, min_side=8, gap=0.20, weak_max=0.40):
-    """Propose a direction filter if long or short structurally underperforms."""
+def _profit_factor(trades):
+    """Gross winst / gross verlies. >1 = winstgevend. inf = alleen winst, 0 = alleen verlies."""
+    gross_profit = sum((t.get("realized_pnl") or 0) for t in trades if (t.get("realized_pnl") or 0) > 0)
+    gross_loss   = abs(sum((t.get("realized_pnl") or 0) for t in trades if (t.get("realized_pnl") or 0) < 0))
+    if gross_loss == 0:
+        return float("inf") if gross_profit > 0 else 0.0
+    return gross_profit / gross_loss
+
+
+def _pf_str(pf):
+    return "∞" if pf == float("inf") else f"{pf:.2f}"
+
+
+def _analyze_direction(trades, min_side=10):
+    """
+    Stel een richtingfilter voor ALLEEN als één kant daadwerkelijk geld verliest
+    (negatieve gem. PnL én profit factor < 1) terwijl de andere kant winstgevend is.
+    Oordeel op rendement, niet op win rate — een lage win rate met grote winnaars is prima.
+    """
     longs  = [t for t in trades if t.get("side") == "buy"]
     shorts = [t for t in trades if t.get("side") == "sell"]
     if len(longs) < min_side or len(shorts) < min_side:
         return None
 
-    wr_long, wr_short = _win_rate(longs), _win_rate(shorts)
-
-    if wr_long - wr_short >= gap and wr_short < weak_max:
-        weak, weak_wr, weak_n, strong_wr = "short", wr_short, len(shorts), wr_long
-        proposed, keep_nl = "long_only", "alleen long"
-    elif wr_short - wr_long >= gap and wr_long < weak_max:
-        weak, weak_wr, weak_n, strong_wr = "long", wr_long, len(longs), wr_short
-        proposed, keep_nl = "short_only", "alleen short"
-    else:
-        return None
-
-    return {
-        "id": str(uuid.uuid4()),
-        "type": "trade_direction",
-        "setup_type": None,
-        "description": f"Alleen {'long' if proposed == 'long_only' else 'short'} traden",
-        "current_value": "both",
-        "proposed_value": proposed,
-        "reasoning": (
-            f"{weak.capitalize()}-trades presteren structureel slecht: "
-            f"{round(weak_wr*100)}% win rate over {weak_n} trades, tegenover "
-            f"{round(strong_wr*100)}% aan de andere kant. "
-            f"Voorstel: {keep_nl} traden om de zwakke kant te vermijden."
-        ),
-        "win_rate_before": round(_win_rate(trades), 3),
-        "win_rate_after": round(strong_wr, 3),
-        "sample_size": len(trades),
-        "status": "pending",
-        "created_at": datetime.utcnow().isoformat(),
-        "decided_at": None,
-    }
+    for weak, strong, weak_nl, proposed, keep_nl in (
+        (shorts, longs, "short", "long_only",  "alleen long"),
+        (longs, shorts, "long",  "short_only", "alleen short"),
+    ):
+        if _avg_pnl(weak) < 0 and _profit_factor(weak) < 1.0 and _avg_pnl(strong) > 0:
+            return {
+                "id": str(uuid.uuid4()),
+                "type": "trade_direction",
+                "setup_type": None,
+                "description": f"{keep_nl.capitalize()} traden",
+                "current_value": "both",
+                "proposed_value": proposed,
+                "reasoning": (
+                    f"{weak_nl.capitalize()}-trades verliezen geld: profit factor "
+                    f"{_pf_str(_profit_factor(weak))}, gemiddeld ${_avg_pnl(weak):.0f} per trade "
+                    f"over {len(weak)} trades. De andere kant is winstgevend "
+                    f"(PF {_pf_str(_profit_factor(strong))}, ${_avg_pnl(strong):+.0f}/trade). "
+                    f"Voorstel: {keep_nl} — het verlieslatende deel eruit."
+                ),
+                "win_rate_before": round(_win_rate(trades), 3),
+                "win_rate_after": round(_win_rate(strong), 3),
+                "sample_size": len(trades),
+                "status": "pending",
+                "created_at": datetime.utcnow().isoformat(),
+                "decided_at": None,
+            }
+    return None
 
 
-def _analyze_trade_mode(trades, min_mode=8, gap=0.20, weak_max=0.40):
-    """Propose restricting to one trade mode if scalp or daytrade underperforms."""
+def _analyze_trade_mode(trades, min_mode=10):
+    """Stel een modusfilter voor alleen als één modus geld verliest en de andere winstgevend is."""
     scalp = [t for t in trades if t.get("trade_mode") == "scalp"]
     day   = [t for t in trades if t.get("trade_mode") == "daytrade"]
     if len(scalp) < min_mode or len(day) < min_mode:
         return None
 
-    wr_scalp, wr_day = _win_rate(scalp), _win_rate(day)
-
-    if wr_day - wr_scalp >= gap and wr_scalp < weak_max:
-        weak, weak_wr, weak_n, strong_wr = "scalp", wr_scalp, len(scalp), wr_day
-        proposed = "daytrade"
-    elif wr_scalp - wr_day >= gap and wr_day < weak_max:
-        weak, weak_wr, weak_n, strong_wr = "daytrade", wr_day, len(day), wr_scalp
-        proposed = "scalp"
-    else:
-        return None
-
-    return {
-        "id": str(uuid.uuid4()),
-        "type": "trade_mode",
-        "setup_type": None,
-        "description": f"Alleen {proposed}-modus traden",
-        "current_value": "both",
-        "proposed_value": proposed,
-        "reasoning": (
-            f"{weak.capitalize()}-trades presteren structureel slecht: "
-            f"{round(weak_wr*100)}% win rate over {weak_n} trades, tegenover "
-            f"{round(strong_wr*100)}% in de {proposed}-modus. "
-            f"Voorstel: alleen in {proposed}-modus traden."
-        ),
-        "win_rate_before": round(_win_rate(trades), 3),
-        "win_rate_after": round(strong_wr, 3),
-        "sample_size": len(trades),
-        "status": "pending",
-        "created_at": datetime.utcnow().isoformat(),
-        "decided_at": None,
-    }
+    for weak, strong, weak_nl, proposed in (
+        (scalp, day, "scalp",    "daytrade"),
+        (day, scalp, "daytrade", "scalp"),
+    ):
+        if _avg_pnl(weak) < 0 and _profit_factor(weak) < 1.0 and _avg_pnl(strong) > 0:
+            return {
+                "id": str(uuid.uuid4()),
+                "type": "trade_mode",
+                "setup_type": None,
+                "description": f"Alleen {proposed}-modus traden",
+                "current_value": "both",
+                "proposed_value": proposed,
+                "reasoning": (
+                    f"{weak_nl.capitalize()}-trades verliezen geld: profit factor "
+                    f"{_pf_str(_profit_factor(weak))}, gemiddeld ${_avg_pnl(weak):.0f} per trade "
+                    f"over {len(weak)} trades. De {proposed}-modus is winstgevend "
+                    f"(PF {_pf_str(_profit_factor(strong))}, ${_avg_pnl(strong):+.0f}/trade). "
+                    f"Voorstel: alleen {proposed}."
+                ),
+                "win_rate_before": round(_win_rate(trades), 3),
+                "win_rate_after": round(_win_rate(strong), 3),
+                "sample_size": len(trades),
+                "status": "pending",
+                "created_at": datetime.utcnow().isoformat(),
+                "decided_at": None,
+            }
+    return None
 
 
 def _analyze_global_threshold(trades, min_sample=10):
-    """Find the min_score threshold that maximizes win rate."""
-    overall_wr = _win_rate(trades)
-    current_threshold = 50  # effective baseline
+    """
+    Zoek de min_score-drempel die de EXPECTANCY (gem. PnL per trade) maximaliseert.
+    Alleen voorstellen als de eruit gefilterde trades samen geld verliezen — dan snijdt
+    het echt verlies weg. Win rate is bewust niet de maatstaf.
+    """
+    overall_avg = _avg_pnl(trades)
+    current_threshold = 50
 
     best_threshold = current_threshold
-    best_wr = overall_wr
+    best_avg = overall_avg
 
-    for threshold in range(45, 86, 5):
+    for threshold in range(55, 86, 5):
         above = [t for t in trades if (t.get("context_score") or 0) >= threshold]
-        if len(above) < min_sample:
+        below = [t for t in trades if (t.get("context_score") or 0) < threshold]
+        if len(above) < min_sample or len(below) < 5:
             continue
-        wr = _win_rate(above)
-        if wr > best_wr + 0.08:  # minimaal 8% verbetering
-            best_wr = wr
+        # Verbetering alleen tellen als het weggefilterde deel netto verliest
+        if _avg_pnl(above) > best_avg and _avg_pnl(below) < 0:
+            best_avg = _avg_pnl(above)
             best_threshold = threshold
 
     if best_threshold <= current_threshold:
         return None
 
-    below  = [t for t in trades if (t.get("context_score") or 0) < best_threshold]
-    above  = [t for t in trades if (t.get("context_score") or 0) >= best_threshold]
-    wr_below = _win_rate(below)
-    wr_above = _win_rate(above)
-
-    reasoning = (
-        f"Trades met score < {best_threshold}: {round(wr_below*100)}% win rate ({len(below)} trades, "
-        f"gem. ${_avg_pnl(below):.0f}). "
-        f"Trades met score >= {best_threshold}: {round(wr_above*100)}% win rate ({len(above)} trades, "
-        f"gem. ${_avg_pnl(above):.0f}). "
-        f"Door de drempel te verhogen worden structureel verliezende trades uitgefilterd."
-    )
+    below = [t for t in trades if (t.get("context_score") or 0) < best_threshold]
+    above = [t for t in trades if (t.get("context_score") or 0) >= best_threshold]
 
     return {
         "id": str(uuid.uuid4()),
@@ -196,9 +200,15 @@ def _analyze_global_threshold(trades, min_sample=10):
         "description": f"Minimum context score verhogen van {current_threshold} naar {best_threshold}",
         "current_value": current_threshold,
         "proposed_value": best_threshold,
-        "reasoning": reasoning,
-        "win_rate_before": round(overall_wr, 3),
-        "win_rate_after": round(wr_above, 3),
+        "reasoning": (
+            f"Trades met score < {best_threshold} verliezen geld: gemiddeld ${_avg_pnl(below):.0f} "
+            f"per trade (PF {_pf_str(_profit_factor(below))}, {len(below)} trades). "
+            f"Trades met score ≥ {best_threshold} verdienen ${_avg_pnl(above):+.0f}/trade "
+            f"(PF {_pf_str(_profit_factor(above))}, {len(above)} trades). "
+            f"De drempel verhogen tilt de expectancy van ${overall_avg:+.0f} naar ${_avg_pnl(above):+.0f} per trade."
+        ),
+        "win_rate_before": round(_win_rate(trades), 3),
+        "win_rate_after": round(_win_rate(above), 3),
         "sample_size": len(trades),
         "status": "pending",
         "created_at": datetime.utcnow().isoformat(),
@@ -213,34 +223,32 @@ _CORE_SETUPS = {"rotation", "continuation"}
 
 
 def _analyze_setup_disable(trades, setup_type, min_trades=12):
-    """Propose disabling a setup if win rate is structurally bad."""
+    """Stel uitschakelen voor alleen als een (niet-kern)setup daadwerkelijk geld verliest."""
     if setup_type in _CORE_SETUPS:
         return None
     setup_trades = [t for t in trades if t.get("setup_type") == setup_type]
     if len(setup_trades) < min_trades:
         return None
 
-    wr = _win_rate(setup_trades)
+    pf  = _profit_factor(setup_trades)
     avg = _avg_pnl(setup_trades)
-    if wr >= 0.38:  # 38% or better -> no action
+    if pf >= 1.0 or avg >= 0:  # verdient geld → niet uitschakelen, ook bij lage win rate
         return None
 
     name = SETUP_NL.get(setup_type, setup_type)
-    reasoning = (
-        f"{name} heeft {len(setup_trades)} trades gehad met {round(wr*100)}% win rate "
-        f"(gemiddeld ${avg:.0f} per trade). "
-        f"Dit is structureel te laag voor een winstgevende strategie."
-    )
-
     return {
         "id": str(uuid.uuid4()),
         "type": "disable_setup",
         "setup_type": setup_type,
-        "description": f"{name} setup uitschakelen (win rate {round(wr*100)}%)",
+        "description": f"{name} setup uitschakelen (verliesgevend)",
         "current_value": "enabled",
         "proposed_value": "disabled",
-        "reasoning": reasoning,
-        "win_rate_before": round(wr, 3),
+        "reasoning": (
+            f"{name} verliest geld: profit factor {_pf_str(pf)}, gemiddeld ${avg:.0f} per trade "
+            f"over {len(setup_trades)} trades. Winnende setups halen dit niet in — uitschakelen "
+            f"verhoogt het totaalrendement."
+        ),
+        "win_rate_before": round(_win_rate(setup_trades), 3),
         "win_rate_after": None,
         "sample_size": len(setup_trades),
         "status": "pending",
@@ -250,22 +258,22 @@ def _analyze_setup_disable(trades, setup_type, min_trades=12):
 
 
 def _analyze_setup_threshold(trades, setup_type, min_sample=8):
-    """Find a higher min_score for a specific setup if low-scoring trades lose."""
+    """Zoek een hogere min_score voor één setup als laag-scorende trades geld verliezen."""
     setup_trades = [t for t in trades if t.get("setup_type") == setup_type]
     if len(setup_trades) < min_sample * 2:
         return None
 
-    overall_wr = _win_rate(setup_trades)
+    overall_avg = _avg_pnl(setup_trades)
     best_threshold = 50
-    best_wr = overall_wr
+    best_avg = overall_avg
 
     for threshold in range(55, 86, 5):
         above = [t for t in setup_trades if (t.get("context_score") or 0) >= threshold]
-        if len(above) < min_sample:
+        below = [t for t in setup_trades if (t.get("context_score") or 0) < threshold]
+        if len(above) < min_sample or len(below) < 4:
             continue
-        wr = _win_rate(above)
-        if wr > best_wr + 0.10:
-            best_wr = wr
+        if _avg_pnl(above) > best_avg and _avg_pnl(below) < 0:
+            best_avg = _avg_pnl(above)
             best_threshold = threshold
 
     if best_threshold <= 50:
@@ -282,12 +290,12 @@ def _analyze_setup_threshold(trades, setup_type, min_sample=8):
         "current_value": 50,
         "proposed_value": best_threshold,
         "reasoning": (
-            f"{name} presteert significant beter bij score >= {best_threshold}: "
-            f"{round(best_wr*100)}% win rate ({len(above)} trades) vs "
-            f"{round(overall_wr*100)}% overall ({len(setup_trades)} trades)."
+            f"{name} verdient significant meer bij score ≥ {best_threshold}: "
+            f"${_avg_pnl(above):+.0f}/trade (PF {_pf_str(_profit_factor(above))}, {len(above)} trades) "
+            f"vs ${overall_avg:+.0f}/trade overall ({len(setup_trades)} trades)."
         ),
-        "win_rate_before": round(overall_wr, 3),
-        "win_rate_after": round(best_wr, 3),
+        "win_rate_before": round(_win_rate(setup_trades), 3),
+        "win_rate_after": round(_win_rate(above), 3),
         "sample_size": len(setup_trades),
         "status": "pending",
         "created_at": datetime.utcnow().isoformat(),
