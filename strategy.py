@@ -659,7 +659,9 @@ def analyze(candles_15m: list, candles_1h: list, cooldown_candles: int = 0,
             scalp_mode: bool = False,
             min_cooldown_candles: int = 2,
             min_score_override=None,
-            setup_min_scores=None) -> Optional[Signal]:
+            setup_min_scores=None,
+            sl_atr_mult=None,
+            min_rr=None) -> Optional[Signal]:
     """
     Analyseer de markt op Rotation en Continuation.
     4H en 1H geven score-bonus maar blokkeren nooit — beide richtingen zijn altijd tradeable.
@@ -747,8 +749,8 @@ def analyze(candles_15m: list, candles_1h: list, cooldown_candles: int = 0,
         atr_source = candles_5m if (scalp_mode and candles_5m and len(candles_5m) >= 14) else candles_15m
         atr = calc_atr(atr_source, 14)
 
-        # SL minimaal 1.5× ATR van entry (1.0× in scalp mode)
-        min_sl_multiplier = 1.0 if scalp_mode else 1.5
+        # SL minimaal 1.5× ATR van entry (1.0× in scalp mode); via autotune instelbaar
+        min_sl_multiplier = float(sl_atr_mult) if sl_atr_mult else (1.0 if scalp_mode else 1.5)
         min_sl_dist = min_sl_multiplier * atr
         sl_dist = abs(signal.entry - signal.stop_loss)
         if sl_dist < min_sl_dist:
@@ -809,9 +811,10 @@ def analyze(candles_15m: list, candles_1h: list, cooldown_candles: int = 0,
             # daar te veel geldige setups op.
             reward = abs(signal.tp3 - signal.entry)
             rr = reward / risk if risk > 0 else 0
-            if rr < 2.0:
-                logger.info(f"Signal afgewezen: R:R te laag ({rr:.1f})")
-                info['result'] = f"setup gevonden ({signal.setup_type} {signal.side}) maar afgewezen: R:R {rr:.1f} < 2.0"
+            rr_floor = float(min_rr) if min_rr else 2.0
+            if rr < rr_floor:
+                logger.info(f"Signal afgewezen: R:R te laag ({rr:.1f} < {rr_floor})")
+                info['result'] = f"setup gevonden ({signal.setup_type} {signal.side}) maar afgewezen: R:R {rr:.1f} < {rr_floor}"
                 info['notes'] = list(_analysis_notes)
                 return None
 

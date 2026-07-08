@@ -38,6 +38,8 @@ class BacktestConfig:
     starting_balance: float = 10000.0
     session_filter: bool = True    # London/NY filter aan/uit
     trade_mode: str = 'daytrade'   # 'daytrade' | 'scalp' | 'both' — welke timeframe-modus simuleren
+    sl_atr_mult: Optional[float] = None  # override min SL-afstand (×ATR); None = strategie-default
+    min_rr: Optional[float] = None       # override minimale R:R op TP3; None = strategie-default
 
 @dataclass
 class BtTrade:
@@ -60,6 +62,8 @@ class BtTrade:
     tp3_hit: bool    = False
     counter_trend: bool = False  # True = setup ging tegen de 4h voorkeursrichting in (max 1.5R, geen TP3/runner)
     trade_mode: str = 'daytrade'  # 'daytrade' (15m trigger) of 'scalp' (5m trigger)
+    context_score: int = 0
+    context_breakdown: dict = field(default_factory=dict)  # per-factor punten, voor factor-analyse
 
 @dataclass
 class BacktestResult:
@@ -509,6 +513,11 @@ def run_backtest(config: BacktestConfig, exchange) -> BacktestResult:
     CTX_1H  = 50
     CTX_4H  = 30
 
+    # Autotune-overrides doorgeven aan analyze()
+    tune_kwargs = {}
+    if config.sl_atr_mult: tune_kwargs['sl_atr_mult'] = config.sl_atr_mult
+    if config.min_rr:      tune_kwargs['min_rr']      = config.min_rr
+
     for i, candle in enumerate(test_candles):
         backtest_state.progress = 0.1 + 0.85 * (i / n_test)
         global_i = n_train + i
@@ -569,6 +578,7 @@ def run_backtest(config: BacktestConfig, exchange) -> BacktestResult:
                 cooldown_candles=cooldown,
                 candles_4h=ctx_4h if len(ctx_4h) >= 10 else None,
                 session_filter=config.session_filter,
+                **tune_kwargs,
             )
         elif trade_mode == 'scalp':
             # Pure scalp: 5m is de instap-timeframe, 15m geeft hogere context.
@@ -581,6 +591,7 @@ def run_backtest(config: BacktestConfig, exchange) -> BacktestResult:
                 disabled_setups=['rotation', 'continuation'],
                 session_filter=config.session_filter,
                 scalp_mode=True,
+                **tune_kwargs,
             )
             effective_mode = 'scalp'
         else:
@@ -593,6 +604,7 @@ def run_backtest(config: BacktestConfig, exchange) -> BacktestResult:
                     candles_4h=ctx_4h if len(ctx_4h) >= 10 else None,
                     candles_5m=ctx_5m if ctx_5m else None,
                     session_filter=config.session_filter,
+                    **tune_kwargs,
                 )
                 if signal:
                     effective_mode = 'daytrade'
@@ -605,6 +617,7 @@ def run_backtest(config: BacktestConfig, exchange) -> BacktestResult:
                     disabled_setups=['rotation', 'continuation'],
                     session_filter=config.session_filter,
                     scalp_mode=True,
+                    **tune_kwargs,
                 )
                 if signal:
                     effective_mode = 'scalp'
@@ -636,6 +649,8 @@ def run_backtest(config: BacktestConfig, exchange) -> BacktestResult:
                 quantity=qty,
                 counter_trend=signal.is_counter_trend,
                 trade_mode=effective_mode,
+                context_score=getattr(signal, 'context_score', 0),
+                context_breakdown=dict(getattr(signal, 'context_breakdown', {}) or {}),
             )
 
     # Openstaande trade bij einde forceren sluiten op laatste close

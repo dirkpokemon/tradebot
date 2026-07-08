@@ -1319,6 +1319,34 @@ function LearningPanel() {
     } finally { setAnalyzing(false); }
   };
 
+  const [tune, setTune] = useState(null);
+
+  const loadTune = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_URL}/learning/autotune`);
+      if (res.ok) setTune(await res.json());
+    } catch { /**/ }
+  }, []);
+
+  useEffect(() => { loadTune(); }, [loadTune]);
+
+  // Sneller pollen zolang de tuning draait
+  useEffect(() => {
+    if (!tune?.running) return;
+    const t = setInterval(() => { loadTune(); load(); }, 4000);
+    return () => clearInterval(t);
+  }, [tune?.running, loadTune, load]);
+
+  const runAutotune = async () => {
+    setMsg(null);
+    try {
+      const res  = await fetch(`${API_URL}/learning/autotune`, { method: "POST" });
+      const json = await res.json();
+      setMsg(json.message || json.detail);
+      loadTune();
+    } catch { /**/ }
+  };
+
   const decide = async (id, action) => {
     setMsg(null);
     const res  = await fetch(`${API_URL}/learning/proposals/${id}/${action}`, { method: "POST" });
@@ -1336,6 +1364,8 @@ function LearningPanel() {
     min_score_setup:  "Setup-score",
     trade_direction:  "Richting",
     trade_mode:       "Handelsmodus",
+    backtest_param:   "Backtest-tuning",
+    factor_insight:   "Factor-inzicht",
   };
 
   const ProposalCard = ({ p }) => {
@@ -1394,12 +1424,14 @@ function LearningPanel() {
               </div>
             </div>
           )}
-          <div>
-            <div style={{ fontSize: 8, color: C.dim, textTransform: "uppercase", letterSpacing: 0.8 }}>Huidig → Nieuw</div>
-            <div style={{ fontSize: 12, fontWeight: 700, color: C.blue }}>
-              {JSON.stringify(p.current_value)} → {JSON.stringify(p.proposed_value)}
+          {p.proposed_value != null && (
+            <div>
+              <div style={{ fontSize: 8, color: C.dim, textTransform: "uppercase", letterSpacing: 0.8 }}>Huidig → Nieuw</div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: C.blue }}>
+                {JSON.stringify(p.current_value)} → {JSON.stringify(p.proposed_value)}
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
         {isPending && (
@@ -1432,13 +1464,22 @@ function LearningPanel() {
             Na 30+ gesloten trades analyseert de bot zichzelf en stelt aanpassingen voor.
           </div>
         </div>
-        <button onClick={runAnalysis} disabled={analyzing} style={{
-          padding: "7px 14px", borderRadius: 8, border: `1px solid ${C.border}`,
-          background: analyzing ? C.bg : C.blue, color: analyzing ? C.muted : "#fff",
-          fontWeight: 700, fontSize: 11, cursor: analyzing ? "not-allowed" : "pointer",
-        }}>
-          {analyzing ? "Analyseren…" : "🔍 Analyseer nu"}
-        </button>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <button onClick={runAnalysis} disabled={analyzing} style={{
+            padding: "7px 14px", borderRadius: 8, border: `1px solid ${C.border}`,
+            background: analyzing ? C.bg : C.blue, color: analyzing ? C.muted : "#fff",
+            fontWeight: 700, fontSize: 11, cursor: analyzing ? "not-allowed" : "pointer",
+          }}>
+            {analyzing ? "Analyseren…" : "🔍 Analyseer nu"}
+          </button>
+          <button onClick={runAutotune} disabled={tune?.running} style={{
+            padding: "7px 14px", borderRadius: 8, border: `1px solid ${C.border}`,
+            background: tune?.running ? C.bg : "#7048e8", color: tune?.running ? C.muted : "#fff",
+            fontWeight: 700, fontSize: 11, cursor: tune?.running ? "not-allowed" : "pointer",
+          }}>
+            {tune?.running ? `Tuning… ${tune.progress || 0}%` : "🔬 Backtest-tuning"}
+          </button>
+        </div>
       </div>
 
       {msg && (
@@ -1447,6 +1488,30 @@ function LearningPanel() {
           padding: "8px 12px", marginBottom: 14, border: `1px solid ${C.border}`,
         }}>
           {msg}
+        </div>
+      )}
+
+      {/* Autotune status */}
+      {tune?.running && (
+        <div style={{
+          fontSize: 11, color: "#7048e8", background: "#f3f0ff", borderRadius: 6,
+          padding: "8px 12px", marginBottom: 14, border: "1px solid #d0bfff",
+        }}>
+          🔬 Backtest-tuning bezig ({tune.progress || 0}%){tune.step ? ` — ${tune.step}` : ""}.
+          Voorstellen verschijnen hieronder zodra de run klaar is.
+        </div>
+      )}
+      {!tune?.running && tune?.error && (
+        <div style={{
+          fontSize: 11, color: C.red, background: C.redBg, borderRadius: 6,
+          padding: "8px 12px", marginBottom: 14, border: `1px solid ${C.border}`,
+        }}>
+          ⚠ Laatste tuning mislukt: {tune.error}
+        </div>
+      )}
+      {!tune?.running && tune?.last_run && (
+        <div style={{ fontSize: 10, color: C.dim, marginBottom: 10 }}>
+          Laatste backtest-tuning: {tune.last_run.slice(0, 16).replace("T", " ")} UTC · draait automatisch elke 30 dagen
         </div>
       )}
 

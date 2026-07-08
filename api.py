@@ -7,12 +7,14 @@ import threading
 import time
 import requests
 import sqlite3
+from datetime import datetime
 from bot import state, run_bot, get_setup_health, SETUP_TYPES, get_public_exchange, get_exchange
 from dataclasses import asdict
 from db import (clear_trades as db_clear_trades, get_trade_candles, save_review, load_reviews_summary,
                 get_learning_proposals, save_learning_proposals, decide_proposal,
                 get_learned_params, set_learned_param, delete_learned_param)
 from learn import analyze_for_proposals
+from autotune import run_autotune, autotune_state
 from backtest import (
     BacktestConfig, backtest_state, run_backtest,
     monte_carlo_state, run_monte_carlo,
@@ -347,6 +349,12 @@ def get_monte_carlo():
 
 
 @app.on_event("startup")
+async def start_monthly_autotune():
+    t = threading.Thread(target=_monthly_autotune_loop, daemon=True)
+    t.start()
+
+
+@app.on_event("startup")
 async def register_webhook():
     token    = os.environ.get('TELEGRAM_BOT_TOKEN', '')
     rail_url = os.environ.get('RAILWAY_URL', '')
@@ -481,6 +489,12 @@ def accept_proposal(proposal_id: str):
     elif ptype == "trade_mode":
         set_learned_param("trade_mode", p["proposed_value"])
         state.trade_mode = p["proposed_value"]
+    elif ptype == "backtest_param":
+        # setup_type draagt de parameternaam (sl_atr_mult | min_rr)
+        if p["setup_type"] in ("sl_atr_mult", "min_rr"):
+            set_learned_param(p["setup_type"], p["proposed_value"])
+    elif ptype == "factor_insight":
+        pass  # informatief — accepteren is alleen bevestigen, wijzigt geen parameters
     decide_proposal(proposal_id, "accepted")
     return {"message": f"Toegepast: {p['description']}", "type": ptype}
 
@@ -498,6 +512,66 @@ def reject_proposal(proposal_id: str):
 @app.get("/learning/params")
 def get_active_params():
     return {"params": get_learned_params()}
+
+
+# ── Autotune (backtest-gedreven parameter-tuning) ────────────────────────────
+
+def _run_autotune_thread():
+    try:
+        exchange = get_public_exchange() if state.sim_mode else get_exchange()
+        proposals = run_autotune(exchange)
+        if proposals:
+            save_learning_proposals(proposals)
+        set_learned_param("last_autotune", datetime.utcnow().isoformat())
+    except Exception as e:
+        import logging; logging.getLogger(__name__).error(f"Autotune-thread mislukt: {e}")
+
+
+@app.post("/learning/autotune")
+def start_autotune():
+    if autotune_state.running:
+        raise HTTPException(status_code=400, detail="Autotune draait al")
+    if backtest_state.running:
+        raise HTTPException(status_code=400, detail="Er draait al een backtest — wacht tot die klaar is")
+    t = threading.Thread(target=_run_autotune_thread, daemon=True)
+    t.start()
+    return {"message": "Backtest-tuning gestart — dit duurt enkele minuten (5 backtests over 150 dagen)"}
+
+
+@app.get("/learning/autotune")
+def get_autotune_status():
+    return {
+        "running":  autotune_state.running,
+        "progress": round(autotune_state.progress * 100),
+        "step":     autotune_state.step,
+        "error":    autotune_state.error,
+        "last_run": autotune_state.last_run or get_learned_params().get("last_autotune"),
+        "summary":  autotune_state.summary,
+    }
+
+
+def _monthly_autotune_loop():
+    """Draait autotune automatisch als de laatste run ≥30 dagen geleden is (check elk uur)."""
+    import logging
+    log = logging.getLogger(__name__)
+    time.sleep(120)  # startup even laten settelen
+    while True:
+        try:
+            if not autotune_state.running and not backtest_state.running:
+                last = get_learned_params().get("last_autotune")
+                due = True
+                if last:
+                    try:
+                        last_dt = datetime.fromisoformat(last)
+                        due = (datetime.utcnow() - last_dt).days >= 30
+                    except ValueError:
+                        due = True
+                if due:
+                    log.info("Maandelijkse autotune gestart (laatste run ≥30 dagen geleden)")
+                    _run_autotune_thread()
+        except Exception as e:
+            log.warning(f"Maandelijkse autotune-check mislukt: {e}")
+        time.sleep(3600)
 
 
 # ── SPA static files (dashboard/dist, built by nixpacks) ─────────────────────

@@ -85,6 +85,11 @@ def _get_learned_analyze_kwargs() -> dict:
             result["min_score_override"] = params["min_score_global"]
         if "setup_min_scores" in params:
             result["setup_min_scores"] = params["setup_min_scores"]
+        # Backtest-getunede parameters (via autotune-voorstellen goedgekeurd)
+        if params.get("sl_atr_mult"):
+            result["sl_atr_mult"] = params["sl_atr_mult"]
+        if params.get("min_rr"):
+            result["min_rr"] = params["min_rr"]
         # Merge learned disabled setups with state disabled setups
         learned_disabled = params.get("disabled_setups", [])
         result["disabled_setups"] = list(set(state.disabled_setups + learned_disabled))
@@ -759,7 +764,7 @@ def run_bot():
                             candles_4h=candles_4h,
                             candles_5m=closed_5m,
                             candles_30m=closed_30m,
-                            disabled_setups=state.disabled_setups,
+                            **_get_learned_analyze_kwargs(),
                             session_filter=False,
                         )
                         state.last_analysis['daytrade'] = get_last_analysis()
@@ -779,7 +784,7 @@ def run_bot():
                             candles_4h=candles_4h,
                             candles_5m=None,
                             candles_1m=closed_1m,
-                            disabled_setups=state.disabled_setups,
+                            **_get_learned_analyze_kwargs(),
                             session_filter=False,
                             scalp_mode=True,
                         )
@@ -803,7 +808,7 @@ def run_bot():
                                 candles_4h=candles_4h,
                                 candles_5m=None,
                                 candles_1m=closed_1m,
-                                disabled_setups=state.disabled_setups,
+                                **_get_learned_analyze_kwargs(),
                                 session_filter=False,
                                 scalp_mode=True,
                             )
@@ -814,7 +819,7 @@ def run_bot():
                                 cooldown_candles=state.sl_cooldown_candles,
                                 candles_4h=candles_4h,
                                 candles_5m=closed_5m,
-                                disabled_setups=state.disabled_setups,
+                                **_get_learned_analyze_kwargs(),
                                 session_filter=False,
                             )
                             eff = 'daytrade'

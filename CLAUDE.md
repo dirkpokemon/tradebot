@@ -193,6 +193,8 @@ The JS bundle filename changes on every build (Vite content hash). If you forget
 - ✅ Telegram webhook auto-registration via RAILWAY_URL
 - ✅ Liquidity Sweep setup
 - ✅ Range setup removed
+- ✅ Self-learning (`learn.py`): analyse van gesloten trades op **expectancy/profit factor** (nooit win rate) → voorstellen in `learning_proposals`, gebruiker keurt goed/af via dashboard. Toegepaste params in `learned_params` tabel; `bot.py:_get_learned_analyze_kwargs()` geeft ze door aan elke `analyze()`-call.
+- ✅ Autotune (`autotune.py`): maandelijkse (30d, checkloop in `api.py`) walk-forward backtest-sweep over SL-multiplier (1.5/1.75/2.0×ATR) en min R:R (2.0/2.5/3.0) — één parameter per keer. Beste variant → `backtest_param` voorstel; factor-analyse over backtest-trades → `factor_insight` voorstel. Handmatig via `POST /learning/autotune` of dashboard-knop 🔬. Kernsetups (rotation/continuation) mogen NOOIT hard uitgeschakeld worden — dat legt de bot stil (deadlock: disabled setup kan win rate nooit herstellen).
 
 ### Fase 3 — Strategie gezondheid
 - **Auto-disable per setup**: als een setup de afgelopen 20 trades onder 40% win rate zakt, tijdelijk uitschakelen. Automatisch herstellen als historische performance terugkomt.
