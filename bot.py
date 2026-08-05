@@ -170,13 +170,19 @@ def get_candles(exchange, symbol: str, timeframe: str, limit: int = 100):
     return exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
 
 def calculate_position_size(balance: float, entry: float, stop: float,
-                             risk_pct: float, vol_scale: float = 1.0) -> float:
+                             risk_pct: float) -> float:
     """
-    Positiegrootte op basis van risicobedrag.
-    vol_scale < 1 bij hoge volatiliteit (ATR14 > ATR50), > 1 bij lage volatiliteit.
-    Geclampt op [0.5, 2.0] zodat positie nooit meer dan verdubbelt of halveert.
+    Positiegrootte op basis van een vast risicobedrag.
+
+    De SL staat waar de prijsactie hem dicteert — dus de afstand entry→SL verschilt
+    per trade. De positiegrootte compenseert dat exact, zodat het verlies bij een SL
+    altijd hetzelfde bedrag is: risk_pct van het saldo (1%, of 0.5% bij counter-trend).
+
+    Er wordt bewust NIET meer geschaald met volatiliteit (vroeger vol_scale, ATR50/ATR14
+    geclampt op [0.5, 2.0]). Dat maakte het werkelijke risico 0.5%–2% van het saldo,
+    waardoor verliezen tot 8× uiteenliepen zonder dat dat uit de strategie volgde.
     """
-    risk_amount = balance * risk_pct * vol_scale
+    risk_amount = balance * risk_pct
     risk_per_unit = abs(entry - stop)
     if risk_per_unit == 0:
         return 0
@@ -243,6 +249,9 @@ def place_order(exchange, symbol: str, signal: Signal, qty: float, candles_15m: 
                 trade_mode=actual_trade_mode,
                 counter_trend=getattr(signal, 'is_counter_trend', False),
             )
+            # SL direct als échte order bij de beurs neerleggen, zodat hij ook
+            # afgaat als de bot offline is of tussen twee prijs-checks in valt.
+            sync_sl_order(exchange, trade)
             logger.info(
                 f"[LIVE] [{signal.setup_type.upper()}] {signal.side.upper()} {qty} {symbol} @ {signal.entry:.0f} | "
                 f"SL={signal.stop_loss:.0f} | TP1={signal.tp1:.0f} | TP2={signal.tp2:.0f} | TP3={signal.tp3:.0f}"
@@ -265,6 +274,64 @@ def place_order(exchange, symbol: str, signal: Signal, qty: float, candles_15m: 
             logger.error(f"Order mislukt: {e}")
             return None
 
+# ─── Beurs-zijdige stop-loss orders ───────────────────────────────────────────
+# In live mode ligt de SL als échte order bij OKX, niet alleen in het geheugen van
+# de bot. Daardoor wordt hij op het SL-niveau uitgevoerd — ook als de bot offline is
+# of tussen twee prijs-checks in een snelle beweging plaatsvindt. Zonder deze order
+# sloot de bot pas bij zijn eigen 60s-controle, vaak voorbij de SL, waardoor het
+# verlies groter uitviel dan de bedoelde 1%.
+#
+# Order-id's worden bewust buiten de Trade dataclass gehouden: het is een vluchtig
+# beurs-artefact dat niet in de database thuishoort.
+_sl_orders: dict = {}
+
+
+def _remaining_fraction(trade: Trade) -> float:
+    """Welk deel van de originele positie staat nog open?"""
+    is_ct = getattr(trade, 'counter_trend', False)
+    frac  = 0.5 if is_ct else 0.25
+    remaining = 1.0
+    if trade.tp1_hit: remaining -= frac
+    if trade.tp2_hit: remaining -= frac
+    if not is_ct and trade.tp3_hit: remaining -= 0.25
+    return max(0.0, round(remaining, 6))
+
+
+def cancel_sl_order(exchange, trade: Trade):
+    """Haal de openstaande stop-order bij de beurs weg (live only)."""
+    order_id = _sl_orders.pop(trade.id, None)
+    if not order_id or state.sim_mode:
+        return
+    try:
+        exchange.cancel_order(order_id, trade.symbol)
+    except Exception as e:
+        logger.warning(f"Stop-order annuleren mislukt ({order_id}): {e}")
+
+
+def sync_sl_order(exchange, trade: Trade):
+    """
+    Zet de stop-order bij de beurs gelijk aan de huidige SL en resterende omvang.
+    Wordt aangeroepen na entry, na elke deelafsluiting en na elke SL-verschuiving.
+    Mislukt dit, dan blijft de eigen bewaking van de bot als vangnet actief.
+    """
+    if state.sim_mode:
+        return
+    cancel_sl_order(exchange, trade)
+    qty = round(trade.quantity * _remaining_fraction(trade), 6)
+    if qty <= 0:
+        return
+    close_side = "sell" if trade.side == "buy" else "buy"
+    try:
+        order = exchange.create_order(
+            trade.symbol, 'market', close_side, qty, None,
+            {'stopLossPrice': trade.stop_loss, 'reduceOnly': True},
+        )
+        _sl_orders[trade.id] = order['id']
+        logger.info(f"Stop-order bij beurs: {qty} @ {trade.stop_loss:.0f}")
+    except Exception as e:
+        logger.error(f"Stop-order plaatsen mislukt: {e} — bot bewaakt SL zelf")
+
+
 def partial_close(exchange, trade: Trade, fraction: float, curr_price: float, label: str):
     """Sluit een deel van de positie — echt of gesimuleerd."""
     qty = round(trade.quantity * fraction, 6)
@@ -272,7 +339,10 @@ def partial_close(exchange, trade: Trade, fraction: float, curr_price: float, la
     if not state.sim_mode:
         try:
             close_side = "sell" if trade.side == "buy" else "buy"
-            exchange.create_market_order(trade.symbol, close_side, qty)
+            # reduceOnly: als de beurs de positie al via de stop-order sloot, wordt
+            # dit een no-op in plaats van een nieuwe positie in tegengestelde richting.
+            exchange.create_market_order(trade.symbol, close_side, qty,
+                                         params={'reduceOnly': True})
         except Exception as e:
             logger.error(f"{label} order fout: {e}")
             return 0.0
@@ -289,11 +359,14 @@ def partial_close(exchange, trade: Trade, fraction: float, curr_price: float, la
     logger.info(f"[{mode}] {label} ({fraction*100:.0f}% @ {curr_price:.0f}) | PnL = {pnl:.2f} USDT")
     return pnl
 
-def trail_sl_to_structure(trade: Trade, candles: list, phase: int):
+def trail_sl_to_structure(trade: Trade, candles: list, phase: int) -> bool:
     """
     Verschuif SL naar relevante prijsactie na TP2 en TP3.
     phase 2 → laatste swing low/high
     phase 3 → nieuwste swing punt nog dichter bij prijs
+
+    Geeft True terug als de SL daadwerkelijk verschoven is, zodat de aanroeper
+    de stop-order bij de beurs alleen dán hoeft te vervangen.
     """
     swing_highs, swing_lows = get_swing_points(candles[:-1], lookback=3)
 
@@ -307,6 +380,7 @@ def trail_sl_to_structure(trade: Trade, candles: list, phase: int):
             if new_sl > trade.stop_loss:    # alleen omhoog verschuiven
                 logger.info(f"SL verschoven naar swing low: {trade.stop_loss:.0f} → {new_sl:.0f} (fase {phase})")
                 trade.stop_loss = new_sl
+                return True
 
     elif trade.side == "sell" and swing_highs:
         candidates = sorted(
@@ -317,6 +391,9 @@ def trail_sl_to_structure(trade: Trade, candles: list, phase: int):
             if new_sl < trade.stop_loss:    # alleen omlaag verschuiven
                 logger.info(f"SL verschoven naar swing high: {trade.stop_loss:.0f} → {new_sl:.0f} (fase {phase})")
                 trade.stop_loss = new_sl
+                return True
+
+    return False
 
 def manage_open_trades(exchange, candles_15m, curr_price: float = None):
     """
@@ -364,14 +441,18 @@ def manage_open_trades(exchange, candles_15m, curr_price: float = None):
         )
 
         if hit_sl:
-            remaining = 1.0
-            if trade.tp1_hit: remaining -= tp_fraction
-            if trade.tp2_hit: remaining -= tp_fraction
-            if not is_ct and trade.tp3_hit: remaining -= 0.25
+            remaining = _remaining_fraction(trade)
 
-            partial_close(exchange, trade, remaining, curr_price, "❌ SL")
+            # Afrekenen op de SL-prijs, niet op de (doorgeschoten) controleprijs.
+            # Live ligt de SL als echte order bij de beurs en wordt daar op dit
+            # niveau uitgevoerd; de order hieronder is reduceOnly en dus een no-op
+            # als de beurs al gesloten heeft. Zo is het verlies bij een SL altijd
+            # het bedrag dat bij de positiegrootte hoort — 1% (0.5% counter-trend).
+            sl_price = trade.stop_loss
+            cancel_sl_order(exchange, trade)
+            partial_close(exchange, trade, remaining, sl_price, "❌ SL")
             trade.status = "closed"
-            trade.exit_price = curr_price
+            trade.exit_price = sl_price
             update_trade(asdict(trade))
             from db import get_trade_candles, save_candle_snapshot
             snap = get_trade_candles(trade.id)
@@ -385,7 +466,7 @@ def manage_open_trades(exchange, candles_15m, curr_price: float = None):
             send_telegram(
                 f"❌ <b>SL HIT</b>\n"
                 f"{trade.setup_type.upper()} {trade.side.upper()} {trade.symbol}\n"
-                f"Entry: {trade.entry_price:.0f} → Exit: {curr_price:.0f}\n"
+                f"Entry: {trade.entry_price:.0f} → Exit: {sl_price:.0f}\n"
                 f"PnL: {trade.realized_pnl:+.2f} USDT | Stops op rij: {state.consecutive_stops}"
             )
 
@@ -407,6 +488,7 @@ def manage_open_trades(exchange, candles_15m, curr_price: float = None):
             partial_close(exchange, trade, tp_fraction, curr_price, "✅ TP1")
             trade.tp1_hit = True
             trade.status = "partial_1"
+            sync_sl_order(exchange, trade)  # resterende omvang is gewijzigd
             update_trade(asdict(trade))
             _record_equity()
             state.consecutive_stops = 0
@@ -419,6 +501,7 @@ def manage_open_trades(exchange, candles_15m, curr_price: float = None):
 
         elif hit_tp2 and is_ct:
             # Counter-trend: TP2 = max target (1.5R) → volledige exit, geen TP3/runner
+            cancel_sl_order(exchange, trade)
             partial_close(exchange, trade, tp_fraction, curr_price, "✅ TP2 (volledige exit)")
             trade.tp2_hit = True
             trade.tp3_hit = True  # markeer als afgerond zodat geen runner-fase volgt
@@ -446,6 +529,7 @@ def manage_open_trades(exchange, candles_15m, curr_price: float = None):
             trade.status = "partial_2"
             trade.stop_loss = trade.entry_price  # → breakeven (prijs bewees zichzelf)
             trail_sl_to_structure(trade, candles_15m, phase=2)
+            sync_sl_order(exchange, trade)  # SL naar BE + kleinere omvang
             update_trade(asdict(trade))
             _record_equity()
             state.consecutive_stops = 0
@@ -461,6 +545,7 @@ def manage_open_trades(exchange, candles_15m, curr_price: float = None):
             trade.tp3_hit = True
             trade.status = "partial_3"
             trail_sl_to_structure(trade, candles_15m, phase=3)
+            sync_sl_order(exchange, trade)
             update_trade(asdict(trade))
             _record_equity()
             state.consecutive_stops = 0
@@ -471,9 +556,12 @@ def manage_open_trades(exchange, candles_15m, curr_price: float = None):
             )
 
         elif trade.tp3_hit and not is_ct:
-            # Runner fase: SL continu trailen op elke nieuwe candle (alleen mét-trend trades)
-            trail_sl_to_structure(trade, candles_15m, phase=4)
-            update_trade(asdict(trade))
+            # Runner fase: SL continu trailen op elke nieuwe candle (alleen mét-trend trades).
+            # Stop-order alleen vervangen als de SL echt verschoof — anders zou elke
+            # candle onnodig een cancel+create bij de beurs veroorzaken.
+            if trail_sl_to_structure(trade, candles_15m, phase=4):
+                sync_sl_order(exchange, trade)
+                update_trade(asdict(trade))
 
 SETUP_TYPES = ['rotation', 'continuation']
 HEALTH_WINDOW      = 20   # aantal recente trades per setup om te beoordelen
@@ -727,10 +815,6 @@ def run_bot():
                 open_scalp    = sum(1 for t in state.trades
                                     if t.status != "closed" and getattr(t, 'trade_mode', 'daytrade') == 'scalp')
 
-                atr14     = calc_atr(candles_15m, 14)
-                atr50     = calc_atr(candles_15m, min(50, len(candles_15m)))
-                vol_scale = max(0.5, min(2.0, atr50 / atr14)) if atr14 > 0 else 1.0
-
                 # Helper: filter + expiry + grootte + order plaatsen voor één signal
                 def _try_place(sig, mode_label_str, eff_mode):
                     if not sig:
@@ -748,7 +832,7 @@ def run_bot():
                         logger.info(f"Signal vervallen: {sig.entry:.0f} vs {ref_price:.0f}")
                         return None
                     risk_pct = state.risk_per_trade * (0.5 if getattr(sig, 'is_counter_trend', False) else 1.0)
-                    qty = calculate_position_size(state.balance, sig.entry, sig.stop_loss, risk_pct, vol_scale)
+                    qty = calculate_position_size(state.balance, sig.entry, sig.stop_loss, risk_pct)
                     if qty <= 0:
                         return None
                     return place_order(exchange, state.symbol, sig, qty, candles_15m, trade_mode_override=eff_mode)

@@ -12,7 +12,8 @@ from bot import state, run_bot, get_setup_health, SETUP_TYPES, get_public_exchan
 from dataclasses import asdict
 from db import (clear_trades as db_clear_trades, get_trade_candles, save_review, load_reviews_summary,
                 get_learning_proposals, save_learning_proposals, decide_proposal,
-                get_learned_params, set_learned_param, delete_learned_param)
+                get_learned_params, set_learned_param, delete_learned_param,
+                get_learned_params_meta)
 from learn import analyze_for_proposals
 from autotune import run_autotune, autotune_state
 from backtest import (
@@ -511,7 +512,25 @@ def reject_proposal(proposal_id: str):
 
 @app.get("/learning/params")
 def get_active_params():
-    return {"params": get_learned_params()}
+    """
+    Actieve geleerde instellingen. `history` is op datum gesorteerd (nieuwste eerst)
+    zodat het dashboard kan tonen welke wijziging als laatste is toegepast.
+    Defaults staan erbij zodat zichtbaar is wat geldt als er nog niets geleerd is.
+    """
+    # Interne boekhouding (bv. wanneer autotune laatst draaide) is geen
+    # strategie-instelling en hoort niet in het overzicht thuis.
+    bookkeeping = {"last_autotune"}
+    return {
+        "params":   get_learned_params(),
+        "history":  [h for h in get_learned_params_meta() if h["key"] not in bookkeeping],
+        "defaults": {
+            "sl_atr_mult":      1.5,
+            "min_rr":           2.0,
+            "min_score_global": 50,
+            "trade_direction":  "both",
+            "risk_per_trade":   state.risk_per_trade,
+        },
+    }
 
 
 # ── Autotune (backtest-gedreven parameter-tuning) ────────────────────────────

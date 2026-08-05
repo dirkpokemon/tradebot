@@ -370,6 +370,26 @@ def get_learned_params() -> dict:
         return {}
 
 
+def get_learned_params_meta() -> list[dict]:
+    """
+    Zelfde als get_learned_params(), maar mét het moment waarop elke instelling
+    is toegepast — nieuwste eerst. Zo is op het dashboard te zien wélke wijziging
+    als laatste is doorgevoerd, en wanneer.
+    """
+    import json
+    try:
+        with _conn() as c:
+            rows = c.execute(
+                "SELECT key, value, updated_at FROM learned_params ORDER BY updated_at DESC"
+            ).fetchall()
+        return [
+            {"key": r[0], "value": json.loads(r[1]), "updated_at": r[2]}
+            for r in rows
+        ]
+    except Exception:
+        return []
+
+
 def set_learned_param(key: str, value):
     import json
     from datetime import datetime

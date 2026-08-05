@@ -1289,6 +1289,119 @@ const REJECTION_LABELS = {
   unknown:       "Onbekend",
 };
 
+// ── Actieve instellingen ─────────────────────────────────────────────────────
+// Toont welke geleerde parameters nu écht gelden en wanneer ze zijn toegepast,
+// nieuwste bovenaan. Zonder dit blok was nergens te zien welke wijziging als
+// laatste is doorgevoerd — de database hield dat wel bij, de UI toonde het niet.
+
+const PARAM_META = {
+  sl_atr_mult:      { label: "SL-afstand",        fmt: v => `${v}× ATR` },
+  min_rr:           { label: "Minimale R:R",      fmt: v => `${v}:1` },
+  min_score_global: { label: "Min. context score", fmt: v => `${v}/100` },
+  setup_min_scores: { label: "Score per setup",   fmt: v => Object.entries(v || {}).map(([k, s]) => `${k}: ${s}`).join(", ") || "—" },
+  disabled_setups:  { label: "Uitgeschakelde setups", fmt: v => (v && v.length) ? v.join(", ") : "geen" },
+  trade_direction:  { label: "Handelsrichting",   fmt: v => ({ both: "long + short", long_only: "alleen long", short_only: "alleen short" }[v] || v) },
+  trade_mode:       { label: "Handelsmodus",      fmt: v => v },
+  risk_per_trade:   { label: "Risico per trade",  fmt: v => `${(v * 100).toFixed(2)}%` },
+};
+
+// Interne bookkeeping-sleutels: geen strategie-instelling, dus niet tonen.
+const HIDDEN_PARAMS = new Set(["last_autotune"]);
+
+function ActiveSettingsPanel() {
+  const [data, setData] = useState(null);
+
+  useEffect(() => {
+    const load = () => fetch(`${API_URL}/learning/params`)
+      .then(r => r.json()).then(setData).catch(() => {});
+    load();
+    const t = setInterval(load, 30000);
+    return () => clearInterval(t);
+  }, []);
+
+  if (!data) return null;
+
+  const history = (data.history || []).filter(h => !HIDDEN_PARAMS.has(h.key));
+  const defaults = data.defaults || {};
+  const learnedKeys = new Set(history.map(h => h.key));
+
+  // Standaardwaarden die (nog) niet geleerd zijn — zo zie je altijd het complete beeld
+  const untouched = Object.entries(defaults).filter(([k]) => !learnedKeys.has(k));
+
+  const fmt = (key, value) => {
+    const meta = PARAM_META[key];
+    try { return meta ? meta.fmt(value) : JSON.stringify(value); }
+    catch { return String(value); }
+  };
+  const label = key => PARAM_META[key]?.label || key;
+
+  return (
+    <div style={{ background: C.card, borderRadius: 14, padding: 20, boxShadow: C.shadow, marginBottom: 20 }}>
+      <SectionLabel>⚙️ Actieve instellingen</SectionLabel>
+      <div style={{ fontSize: 11, color: C.muted, marginTop: 2, marginBottom: 14 }}>
+        Wat de bot nu daadwerkelijk gebruikt. Aangepaste waarden staan bovenaan, met de datum waarop je ze goedkeurde.
+      </div>
+
+      {history.length === 0 ? (
+        <div style={{
+          fontSize: 11, color: C.muted, background: C.bg, borderRadius: 8,
+          padding: "10px 12px", marginBottom: 12, border: `1px dashed ${C.border}`,
+        }}>
+          Nog geen enkele wijziging toegepast — de bot draait volledig op de standaardwaarden hieronder.
+        </div>
+      ) : (
+        <div style={{ marginBottom: untouched.length ? 16 : 0 }}>
+          {history.map((h, i) => (
+            <div key={h.key} style={{
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+              gap: 10, flexWrap: "wrap",
+              background: i === 0 ? C.greenBg : C.bg,
+              border: `1px solid ${i === 0 ? C.green : C.border}`,
+              borderRadius: 8, padding: "10px 12px", marginBottom: 6,
+            }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: C.text }}>
+                  {label(h.key)}
+                  {i === 0 && (
+                    <span style={{
+                      marginLeft: 8, fontSize: 8, fontWeight: 800, color: C.green,
+                      textTransform: "uppercase", letterSpacing: 0.8,
+                    }}>← laatst toegepast</span>
+                  )}
+                </div>
+                <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>
+                  Sinds {(h.updated_at || "").slice(0, 16).replace("T", " ")} UTC
+                </div>
+              </div>
+              <div style={{ fontSize: 13, fontWeight: 800, color: C.blue, whiteSpace: "nowrap" }}>
+                {fmt(h.key, h.value)}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {untouched.length > 0 && (
+        <>
+          <div style={{ fontSize: 9, fontWeight: 700, color: C.dim, textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 6 }}>
+            Standaard (nooit gewijzigd)
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {untouched.map(([k, v]) => (
+              <div key={k} style={{
+                background: C.bg, border: `1px solid ${C.border}`, borderRadius: 6,
+                padding: "6px 10px", fontSize: 11, color: C.muted,
+              }}>
+                {label(k)}: <span style={{ fontWeight: 700, color: C.text }}>{fmt(k, v)}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── Self-learning proposals panel ────────────────────────────────────────────
 function LearningPanel() {
   const [data, setData]         = useState(null);
@@ -1859,6 +1972,7 @@ export default function Dashboard() {
       <MonteCarloPanel />
 
       {/* ── Self-learning proposals ─────────────────────────────────────────── */}
+      <ActiveSettingsPanel />
       <LearningPanel />
 
       {/* ── Closed trades ──────────────────────────────────────────────────── */}

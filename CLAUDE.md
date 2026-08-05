@@ -158,10 +158,11 @@ The JS bundle filename changes on every build (Vite content hash). If you forget
 ## Key design constraints
 
 - **One trade at a time.** `run_bot` only calls `analyze()` when `open_count == 0`.
-- **Candle-level resolution.** All SL/TP checks use the candle close price, not tick-level prices. A trade can skip a TP level if price jumps.
+- **Candle-level resolution.** TP checks use the candle close price (plus a 60s live-price poll), not tick-level prices. A trade can skip a TP level if price jumps. SL is the exception — see the exchange-order point below.
 - **SL only moves in the favorable direction.** `trail_sl_to_structure` guards against moving SL against the trade.
 - **EEA / Netherlands users** must use `ccxt.myokx` (OKX's European entity). The code tries `myokx` first and falls back to `okx`.
-- **Volatility-scaled position sizing.** `calculate_position_size` accepts a `vol_scale` factor derived from ATR14/ATR50. When recent volatility (ATR14) is high relative to baseline (ATR50), position size shrinks; clamped to [0.5, 2.0].
+- **Fixed-risk position sizing.** `calculate_position_size(balance, entry, stop, risk_pct)` sizes so that an SL hit always costs exactly `risk_pct` of balance — 1%, or 0.5% for counter-trend trades (deliberate: they cap at 1.5R and have no runner). The SL itself is price-action based, so its distance varies per trade; the quantity compensates. **Do not reintroduce `vol_scale`** (the old ATR50/ATR14 factor clamped to [0.5, 2.0]): it made real risk swing between 0.5% and 2% of balance, so losses varied up to 8× for no strategy reason.
+- **SL is a real exchange order in live mode.** `sync_sl_order()` places a reduce-only stop order at OKX on entry and replaces it after every partial close and every SL move (`trail_sl_to_structure` returns `True` when the SL actually moved, so the runner phase doesn't spam cancel/create). `cancel_sl_order()` runs before any full exit. All closing market orders use `reduceOnly` so they become no-ops if the exchange already closed the position — without this, a double close would open an opposite position. SL exits are booked at `trade.stop_loss`, not at the (overshot) polling price, in both `bot.py` and `backtest.py` — keep these two in sync or autotune tunes on wrong assumptions.
 - **SL cooldown.** `analyze()` skips signal detection for 5 candles (75 min on 15m) after a stop loss hit, via the `cooldown_candles` parameter.
 - **Circuit breaker.** After 5 consecutive stop losses, `state.circuit_breaker_until` is set to `now + 86400s` and the bot loop sleeps until that timestamp.
 - **Daily loss limit.** If equity drops more than 3% from the day's starting equity, no new trades are taken for the rest of that UTC day.

@@ -252,11 +252,16 @@ def _manage_trade(trade: BtTrade, candle_close: float,
         if trade.tp2_hit: remaining -= tp_fraction
         if not is_ct and trade.tp3_hit: remaining -= 0.25
         qty = trade.quantity * remaining
-        pnl = (candle_close - trade.entry_price) * qty if trade.side == "buy" \
-              else (trade.entry_price - candle_close) * qty
+        # Afrekenen op de SL-prijs, niet op de doorgeschoten close — gelijk aan de
+        # live bot, die de SL als echte order bij de beurs heeft liggen. Zou de
+        # backtest op de close afrekenen, dan zouden verliezen hier structureel
+        # groter uitvallen dan live en tunet autotune op verkeerde aannames.
+        sl_price = trade.stop_loss
+        pnl = (sl_price - trade.entry_price) * qty if trade.side == "buy" \
+              else (trade.entry_price - sl_price) * qty
         trade.realized_pnl += pnl
         pnl_delta = pnl
-        trade.exit_price = candle_close
+        trade.exit_price = sl_price
         trade.status = "closed"
 
     elif hit_tp1:
