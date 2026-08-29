@@ -59,6 +59,13 @@ const SETUP_META = [
 const fmt     = (n, d = 2) => n == null ? "—" : Number(n).toFixed(d);
 const fmtP    = (n) => n == null ? "—" : Number(n).toLocaleString("nl-NL", { maximumFractionDigits: 0 });
 const fmtSign = (n, d = 2) => n == null ? "—" : `${n >= 0 ? "+" : ""}$${fmt(n, d)}`;
+// ISO-timestamp (UTC, zoals de bot hem opslaat) → "05/08". Geen tijdzone-omrekening:
+// de rest van de UI toont ook UTC, dus omrekenen zou de tijden onderling laten verschillen.
+const fmtDate = (iso) => {
+  if (!iso || iso.length < 10) return "—";
+  const [y, m, d] = iso.slice(0, 10).split("-");
+  return `${d}/${m}`;
+};
 const getPhase = (t) => PHASES[t.status] || PHASES.open;
 
 function getSession() {
@@ -674,7 +681,7 @@ function ClosedTradesTable({ trades }) {
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, minWidth: 560 }}>
         <thead>
           <tr style={{ borderBottom: `1px solid ${C.border}`, background: "#fafbfd" }}>
-            {["Tijd", "Setup", "Mode", "Side", "Entry", "Exit", "TP's", "PnL"].map(h => (
+            {["Datum (UTC)", "Setup", "Mode", "Side", "Entry", "Exit", "TP's", "PnL"].map(h => (
               <th key={h} style={{ padding: "10px 16px", textAlign: "left", color: C.muted, fontWeight: 600, fontSize: 9, letterSpacing: 1, textTransform: "uppercase" }}>{h}</th>
             ))}
           </tr>
@@ -682,7 +689,10 @@ function ClosedTradesTable({ trades }) {
         <tbody>
           {[...trades].reverse().map((t, i) => (
             <tr key={t.id || i} className="closed-row" style={{ borderBottom: `1px solid ${C.border}` }}>
-              <td style={{ padding: "10px 16px", color: C.muted }}>{t.timestamp?.slice(11, 16)}</td>
+              <td style={{ padding: "10px 16px", whiteSpace: "nowrap" }}>
+                <div style={{ color: C.text, fontWeight: 600 }}>{fmtDate(t.timestamp)}</div>
+                <div style={{ color: C.muted, fontSize: 10 }}>{t.timestamp?.slice(11, 16)}</div>
+              </td>
               <td style={{ padding: "10px 16px" }}>
                 <Tag color={C.blue} bg={C.blueBg}>{t.setup_type?.replace("_", " ")}</Tag>
               </td>
@@ -1470,6 +1480,15 @@ function LearningPanel() {
 
   const pending  = data?.proposals?.filter(p => p.status === "pending")  ?? [];
   const decided  = data?.proposals?.filter(p => p.status !== "pending")  ?? [];
+  const suppressed = data?.suppressed ?? 0;
+
+  const allowRejected = async () => {
+    setMsg(null);
+    const res  = await fetch(`${API_URL}/learning/proposals/allow-rejected`, { method: "POST" });
+    const json = await res.json();
+    setMsg(json.message);
+    load();
+  };
 
   const typeLabel = {
     min_score_global: "Min. score",
@@ -1625,6 +1644,28 @@ function LearningPanel() {
       {!tune?.running && tune?.last_run && (
         <div style={{ fontSize: 10, color: C.dim, marginBottom: 10 }}>
           Laatste backtest-tuning: {tune.last_run.slice(0, 16).replace("T", " ")} UTC · draait automatisch elke 30 dagen
+        </div>
+      )}
+
+      {/* Onderdrukte adviezen: wat je afwijst komt niet terug */}
+      {suppressed > 0 && (
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          gap: 10, flexWrap: "wrap",
+          fontSize: 11, color: C.muted, background: C.bg, borderRadius: 6,
+          padding: "8px 12px", marginBottom: 14, border: `1px solid ${C.border}`,
+        }}>
+          <span>
+            🚫 {suppressed} eerder afgewezen advies{suppressed > 1 ? "en worden" : " wordt"} niet
+            opnieuw voorgesteld. Een advies met een <i>andere</i> waarde komt wel gewoon langs.
+          </span>
+          <button onClick={allowRejected} style={{
+            padding: "5px 10px", borderRadius: 6, border: `1px solid ${C.border}`,
+            background: C.card, color: C.muted, fontWeight: 700, fontSize: 10,
+            cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap",
+          }}>
+            Weer toestaan
+          </button>
         </div>
       )}
 

@@ -299,16 +299,62 @@ def save_signal_review(signal_id: str, setup_type: str, side: str, approved: boo
         ))
 
 
-def save_learning_proposals(proposals: list[dict]):
-    """Save new proposals, replacing any existing pending proposal of the same type+setup."""
+def get_rejected_signatures() -> set:
+    """
+    Handtekeningen van eerder afgewezen voorstellen: (type, setup_type, proposed_value).
+
+    De waarde hoort bij de handtekening: wijs je "score naar 55" af, dan mag een
+    later voorstel "score naar 70" nog steeds langskomen — dat is een ander advies
+    op nieuwe data. Alleen exact hetzelfde advies blijft weg.
+    """
     import json
+    try:
+        with _conn() as c:
+            rows = c.execute(
+                "SELECT type, setup_type, proposed_value FROM learning_proposals WHERE status='rejected'"
+            ).fetchall()
+        return {(r[0], r[1], r[2]) for r in rows}
+    except Exception:
+        return set()
+
+
+def count_suppressed_proposals() -> int:
+    """Aantal unieke adviezen dat door een eerdere afwijzing wordt onderdrukt."""
+    return len(get_rejected_signatures())
+
+
+def clear_rejected_proposals() -> int:
+    """
+    Maak de afwijs-geschiedenis leeg zodat onderdrukte adviezen weer voorgesteld
+    mogen worden. Geeft terug hoeveel afwijzingen zijn opgeheven.
+    """
+    with _conn() as c:
+        n = c.execute("SELECT COUNT(*) FROM learning_proposals WHERE status='rejected'").fetchone()[0]
+        c.execute("DELETE FROM learning_proposals WHERE status='rejected'")
+    return n
+
+
+def save_learning_proposals(proposals: list[dict]) -> int:
+    """
+    Sla nieuwe voorstellen op en geef terug hoeveel er daadwerkelijk bewaard zijn.
+
+    Voorstellen die eerder zijn afgewezen worden overgeslagen — anders komt elk
+    advies dat je wegklikt bij de volgende analyse gewoon weer terug.
+    """
+    import json
+    rejected = get_rejected_signatures()
+    saved = 0
     with _conn() as c:
         for p in proposals:
+            signature = (p["type"], p.get("setup_type"), json.dumps(p["proposed_value"]))
+            if signature in rejected:
+                continue
             # Remove old pending proposal of same type+setup
             c.execute(
                 "DELETE FROM learning_proposals WHERE type=? AND (setup_type=? OR (setup_type IS NULL AND ? IS NULL)) AND status='pending'",
                 (p["type"], p.get("setup_type"), p.get("setup_type"))
             )
+            saved += 1
             c.execute("""
                 INSERT INTO learning_proposals
                 (id, type, setup_type, description, current_value, proposed_value,
@@ -323,6 +369,7 @@ def save_learning_proposals(proposals: list[dict]):
                 p.get("sample_size"), p.get("status", "pending"),
                 p.get("created_at"), p.get("decided_at"),
             ))
+    return saved
 
 
 def get_learning_proposals(status: str = None) -> list[dict]:

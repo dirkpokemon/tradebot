@@ -194,6 +194,7 @@ The JS bundle filename changes on every build (Vite content hash). If you forget
 - ✅ Telegram webhook auto-registration via RAILWAY_URL
 - ✅ Liquidity Sweep setup
 - ✅ Range setup removed
+- ✅ Afgewezen voorstellen komen niet terug: `save_learning_proposals()` slaat adviezen over waarvan de handtekening (type + setup_type + proposed_value) al eens is afgewezen, en geeft terug hoeveel er écht zijn bewaard. Een advies met een *andere* waarde komt wél door. `POST /learning/proposals/allow-rejected` wist de afwijs-geschiedenis (knop "Weer toestaan" in het dashboard).
 - ✅ Self-learning (`learn.py`): analyse van gesloten trades op **expectancy/profit factor** (nooit win rate) → voorstellen in `learning_proposals`, gebruiker keurt goed/af via dashboard. Toegepaste params in `learned_params` tabel; `bot.py:_get_learned_analyze_kwargs()` geeft ze door aan elke `analyze()`-call.
 - ✅ Autotune (`autotune.py`): maandelijkse (30d, checkloop in `api.py`) walk-forward backtest-sweep over SL-multiplier (1.5/1.75/2.0×ATR) en min R:R (2.0/2.5/3.0) — één parameter per keer. Beste variant → `backtest_param` voorstel; factor-analyse over backtest-trades → `factor_insight` voorstel. Handmatig via `POST /learning/autotune` of dashboard-knop 🔬. Kernsetups (rotation/continuation) mogen NOOIT hard uitgeschakeld worden — dat legt de bot stil (deadlock: disabled setup kan win rate nooit herstellen).
 

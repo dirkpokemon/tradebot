@@ -13,7 +13,8 @@ from dataclasses import asdict
 from db import (clear_trades as db_clear_trades, get_trade_candles, save_review, load_reviews_summary,
                 get_learning_proposals, save_learning_proposals, decide_proposal,
                 get_learned_params, set_learned_param, delete_learned_param,
-                get_learned_params_meta)
+                get_learned_params_meta, count_suppressed_proposals,
+                clear_rejected_proposals)
 from learn import analyze_for_proposals
 from autotune import run_autotune, autotune_state
 from backtest import (
@@ -441,7 +442,19 @@ def get_learning_stats():
 @app.get("/learning/proposals")
 def get_proposals():
     proposals = get_learning_proposals()
-    return {"proposals": proposals, "pending": sum(1 for p in proposals if p["status"] == "pending")}
+    return {
+        "proposals": proposals,
+        "pending": sum(1 for p in proposals if p["status"] == "pending"),
+        # Adviezen die je eerder afwees en daarom niet opnieuw worden voorgesteld
+        "suppressed": count_suppressed_proposals(),
+    }
+
+
+@app.post("/learning/proposals/allow-rejected")
+def allow_rejected_proposals():
+    """Hef de onderdrukking op: eerder afgewezen adviezen mogen weer voorgesteld worden."""
+    n = clear_rejected_proposals()
+    return {"message": f"{n} eerdere afwijzing(en) gewist — deze adviezen kunnen weer terugkomen"}
 
 
 @app.post("/learning/analyze")
@@ -456,8 +469,18 @@ def trigger_analysis():
                         f"De bot presteert op de gemeten punten (richting, modus, score) al goed genoeg."),
             "proposals": 0,
         }
-    save_learning_proposals(proposals)
-    return {"message": f"{len(proposals)} nieuwe voorstellen gegenereerd uit {closed} trades", "proposals": len(proposals)}
+    saved = save_learning_proposals(proposals)
+    skipped = len(proposals) - saved
+    if saved == 0:
+        return {
+            "message": (f"Analyse voltooid over {closed} trades: alleen adviezen die je eerder al "
+                        f"afwees ({skipped}). Die worden niet opnieuw voorgesteld."),
+            "proposals": 0,
+        }
+    msg = f"{saved} nieuwe voorstellen gegenereerd uit {closed} trades"
+    if skipped:
+        msg += f" ({skipped} eerder afgewezen advies overgeslagen)"
+    return {"message": msg, "proposals": saved}
 
 
 @app.post("/learning/proposals/{proposal_id}/accept")
@@ -540,7 +563,13 @@ def _run_autotune_thread():
         exchange = get_public_exchange() if state.sim_mode else get_exchange()
         proposals = run_autotune(exchange)
         if proposals:
-            save_learning_proposals(proposals)
+            saved = save_learning_proposals(proposals)
+            skipped = len(proposals) - saved
+            if skipped:
+                import logging
+                logging.getLogger(__name__).info(
+                    f"Autotune: {skipped} advies/adviezen overgeslagen (eerder afgewezen)"
+                )
         set_learned_param("last_autotune", datetime.utcnow().isoformat())
     except Exception as e:
         import logging; logging.getLogger(__name__).error(f"Autotune-thread mislukt: {e}")

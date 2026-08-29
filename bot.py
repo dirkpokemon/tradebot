@@ -107,8 +107,12 @@ def _maybe_run_learning():
         from learn import analyze_for_proposals
         proposals = analyze_for_proposals(min_trades=30)
         if proposals:
-            save_learning_proposals(proposals)
-            logger.info(f"Leeranalyse: {len(proposals)} nieuwe voorstellen opgeslagen")
+            saved = save_learning_proposals(proposals)
+            skipped = len(proposals) - saved
+            logger.info(
+                f"Leeranalyse: {saved} nieuwe voorstellen opgeslagen"
+                + (f" ({skipped} eerder afgewezen, overgeslagen)" if skipped else "")
+            )
     except Exception as e:
         logger.warning(f"Leeranalyse mislukt: {e}")
 
