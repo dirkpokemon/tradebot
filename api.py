@@ -39,10 +39,31 @@ class BotConfig(BaseModel):
     timeframe: str = "15m"
     risk_per_trade: float = 0.01
 
+def get_public_url() -> str:
+    """
+    Publieke URL van deze deployment — tevens het adres van het dashboard, want
+    de API serveert de frontend zelf op '/'.
+
+    RAILWAY_URL zet je handmatig; RAILWAY_PUBLIC_DOMAIN vult Railway zelf in zodra
+    de service een publiek domein heeft. Door op die tweede terug te vallen werkt
+    dit (en de Telegram-webhook) ook als RAILWAY_URL nooit is ingevuld.
+    Geeft "" als er geen publiek domein bekend is, bijvoorbeeld lokaal.
+    """
+    for value in (os.environ.get('RAILWAY_URL', ''),
+                  os.environ.get('RAILWAY_PUBLIC_DOMAIN', ''),
+                  os.environ.get('RAILWAY_STATIC_URL', '')):
+        value = (value or '').strip().rstrip('/')
+        if value:
+            return value if value.startswith('http') else f"https://{value}"
+    return ""
+
+
 @app.get("/status")
 def get_status():
     trades_serialized = [asdict(t) for t in state.trades]
     return {
+        # Adres van deze deployment: het dashboard draait op dezelfde URL
+        "public_url": get_public_url(),
         "running": state.running,
         "sim_mode": state.sim_mode,
         "symbol": state.symbol,
@@ -357,11 +378,24 @@ async def start_monthly_autotune():
 
 
 @app.on_event("startup")
+async def log_public_url():
+    """Zet het dashboard-adres in de opstartlogs, zodat je het altijd terug kunt vinden."""
+    import logging
+    log = logging.getLogger(__name__)
+    url = get_public_url()
+    if url:
+        log.info(f"Dashboard bereikbaar op: {url}")
+    else:
+        log.info("Geen publiek domein gevonden (RAILWAY_URL / RAILWAY_PUBLIC_DOMAIN leeg) "
+                 "— dashboard draait alleen lokaal")
+
+
+@app.on_event("startup")
 async def register_webhook():
     token    = os.environ.get('TELEGRAM_BOT_TOKEN', '')
-    rail_url = os.environ.get('RAILWAY_URL', '')
+    rail_url = get_public_url()
     if token and rail_url:
-        webhook_url = f"{rail_url.rstrip('/')}/telegram/webhook"
+        webhook_url = f"{rail_url}/telegram/webhook"
         try:
             r = requests.post(
                 f"https://api.telegram.org/bot{token}/setWebhook",

@@ -45,6 +45,8 @@ git commit -m "rebuild dashboard"
 
 **Railway persistent volume:** Add a volume mounted at `/data` in Railway settings, then set `DB_PATH=/data/trades.db`. Without this, the SQLite DB resets on every redeploy.
 
+**Public URL:** `get_public_url()` in `api.py` resolves the deployment's address — `RAILWAY_URL` first, then Railway's auto-injected `RAILWAY_PUBLIC_DOMAIN`, then `RAILWAY_STATIC_URL`; a bare domain gets `https://` prepended. It is returned by `/status` as `public_url`, logged at startup ("Dashboard bereikbaar op: …"), and used for the Telegram webhook. The dashboard is served by the API itself on `/`, so this URL *is* the dashboard address.
+
 **Telegram webhook:** Set `RAILWAY_URL` and `TELEGRAM_BOT_TOKEN`. On startup, `api.py` auto-registers `{RAILWAY_URL}/telegram/webhook`. After first Railway deploy, get the URL from Railway dashboard and add it as env var, then redeploy once more.
 
 ## Architecture
