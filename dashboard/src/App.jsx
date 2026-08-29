@@ -102,7 +102,7 @@ function Tag({ children, color, bg }) {
 function SectionLabel({ children, badge }) {
   return (
     <div style={{
-      fontSize: 10, letterSpacing: 1.5, color: C.muted, marginBottom: 14,
+      fontSize: 10, letterSpacing: 1.5, color: C.muted, marginBottom: 10,
       textTransform: "uppercase", fontWeight: 600,
       display: "flex", alignItems: "center", gap: 8,
     }}>
@@ -678,37 +678,48 @@ function ClosedTradesTable({ trades }) {
   return (
     <div style={{ background: C.card, borderRadius: 14, boxShadow: C.shadow, overflow: "hidden" }}>
       <div className="closed-table-scroll">
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, minWidth: 560 }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, minWidth: 760, tableLayout: "fixed" }}>
+        <colgroup>
+          {/* Vaste breedtes; 'Reden' slurpt de rest op, zodat op een breed scherm
+              de ruimte naar informatie gaat in plaats van naar lege kolomgaten. */}
+          {[104, 116, 92, 78, 78, 78, 104, 56, null, 104].map((w, i) => (
+            <col key={i} style={w ? { width: w } : undefined} />
+          ))}
+        </colgroup>
         <thead>
           <tr style={{ borderBottom: `1px solid ${C.border}`, background: "#fafbfd" }}>
-            {["Datum (UTC)", "Setup", "Mode", "Side", "Entry", "Exit", "TP's", "PnL"].map(h => (
-              <th key={h} style={{ padding: "10px 16px", textAlign: "left", color: C.muted, fontWeight: 600, fontSize: 9, letterSpacing: 1, textTransform: "uppercase" }}>{h}</th>
+            {[
+              ["Datum (UTC)", "left"], ["Setup", "left"], ["Mode", "left"], ["Side", "left"],
+              ["Entry", "right"], ["Exit", "right"], ["TP's", "left"], ["Score", "right"],
+              ["Reden", "left"], ["PnL", "right"],
+            ].map(([h, align]) => (
+              <th key={h} style={{ padding: "7px 12px", textAlign: align, color: C.muted, fontWeight: 600, fontSize: 9, letterSpacing: 1, textTransform: "uppercase" }}>{h}</th>
             ))}
           </tr>
         </thead>
         <tbody>
           {[...trades].reverse().map((t, i) => (
             <tr key={t.id || i} className="closed-row" style={{ borderBottom: `1px solid ${C.border}` }}>
-              <td style={{ padding: "10px 16px", whiteSpace: "nowrap" }}>
-                <div style={{ color: C.text, fontWeight: 600 }}>{fmtDate(t.timestamp)}</div>
-                <div style={{ color: C.muted, fontSize: 10 }}>{t.timestamp?.slice(11, 16)}</div>
+              <td style={{ padding: "7px 12px", whiteSpace: "nowrap" }}>
+                <span style={{ color: C.text, fontWeight: 600 }}>{fmtDate(t.timestamp)}</span>
+                <span style={{ color: C.muted, marginLeft: 6 }}>{t.timestamp?.slice(11, 16)}</span>
               </td>
-              <td style={{ padding: "10px 16px" }}>
+              <td style={{ padding: "7px 12px" }}>
                 <Tag color={C.blue} bg={C.blueBg}>{t.setup_type?.replace("_", " ")}</Tag>
               </td>
-              <td style={{ padding: "10px 16px" }}>
+              <td style={{ padding: "7px 12px" }}>
                 <Tag color={t.trade_mode === "scalp" ? C.orange : C.muted} bg={t.trade_mode === "scalp" ? "#fff3ec" : "#f5f6fa"}>
                   {(t.trade_mode || "daytrade").toUpperCase()}
                 </Tag>
               </td>
-              <td style={{ padding: "10px 16px" }}>
+              <td style={{ padding: "7px 12px" }}>
                 <span style={{ color: t.side === "buy" ? C.green : C.red, fontWeight: 700, textTransform: "uppercase", fontSize: 11 }}>
                   {t.side === "buy" ? "▲" : "▼"} {t.side}
                 </span>
               </td>
-              <td style={{ padding: "10px 16px", fontWeight: 600 }}>{fmtP(t.entry_price)}</td>
-              <td style={{ padding: "10px 16px", color: C.muted }}>{fmtP(t.exit_price)}</td>
-              <td style={{ padding: "10px 16px" }}>
+              <td style={{ padding: "7px 12px", fontWeight: 600, textAlign: "right" }}>{fmtP(t.entry_price)}</td>
+              <td style={{ padding: "7px 12px", color: C.muted, textAlign: "right" }}>{fmtP(t.exit_price)}</td>
+              <td style={{ padding: "7px 12px" }}>
                 <div style={{ display: "flex", gap: 3 }}>
                   {["tp1_hit", "tp2_hit", "tp3_hit"].map((k, idx) => (
                     <span key={k} style={{
@@ -719,7 +730,16 @@ function ClosedTradesTable({ trades }) {
                   ))}
                 </div>
               </td>
-              <td style={{ padding: "10px 16px" }}><PnlBadge value={t.realized_pnl} /></td>
+              <td style={{ padding: "7px 12px", textAlign: "right", color: C.muted, fontWeight: 600 }}>
+                {t.context_score || "—"}
+              </td>
+              {/* Volledige tekst in de tooltip; in de rij afgekapt zodat de hoogte gelijk blijft */}
+              <td style={{ padding: "7px 12px", color: C.muted }} title={t.reason || ""}>
+                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {t.reason || "—"}
+                </div>
+              </td>
+              <td style={{ padding: "7px 12px", textAlign: "right" }}><PnlBadge value={t.realized_pnl} /></td>
             </tr>
           ))}
         </tbody>
@@ -1778,6 +1798,46 @@ function LearningStatsPanel() {
   );
 }
 
+// ─── Tabbalk ──────────────────────────────────────────────────────────────────
+
+function TabBar({ tab, onSelect, counts }) {
+  const tabs = [
+    { id: "overzicht", label: "Overzicht" },
+    { id: "trades",    label: "Trades",   count: counts.trades },
+    { id: "analyse",   label: "Analyse"  },
+    { id: "leren",     label: "Leren",    count: counts.pending, accent: true },
+  ];
+  return (
+    <div className="tab-bar" style={{
+      display: "flex", gap: 2, marginBottom: 16, background: C.card,
+      padding: 3, borderRadius: 10, boxShadow: C.shadow, width: "fit-content",
+    }}>
+      {tabs.map(t => {
+        const active = tab === t.id;
+        return (
+          <button key={t.id} onClick={() => onSelect(t.id)} style={{
+            display: "flex", alignItems: "center", gap: 6,
+            padding: "7px 16px", borderRadius: 8, border: "none", cursor: "pointer",
+            fontFamily: "inherit", fontSize: 12, fontWeight: 700,
+            background: active ? C.blue : "transparent",
+            color: active ? "#fff" : C.muted,
+            transition: "background 0.15s, color 0.15s",
+          }}>
+            {t.label}
+            {t.count > 0 && (
+              <span style={{
+                fontSize: 9, fontWeight: 800, borderRadius: 99, padding: "1px 6px",
+                background: active ? "rgba(255,255,255,0.25)" : (t.accent ? C.yellow : C.border),
+                color:      active ? "#fff" : (t.accent ? "#fff" : C.muted),
+              }}>{t.count}</span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 
 export default function Dashboard() {
@@ -1786,6 +1846,17 @@ export default function Dashboard() {
   const [config, setConfig] = useState({ symbol: "BTC/USDT:USDT", risk_per_trade: 0.01 });
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState(null);
+  // Tabs houden de pagina kort: alles onder elkaar zetten gaf meterslang scrollen
+  // op desktop. Het dagelijkse werk staat op Overzicht; de zware analysepanelen
+  // (backtest, monte carlo, leren) laden pas als je ze opent.
+  const [tab, setTab] = useState(() => {
+    try { return localStorage.getItem("tradebot.tab") || "overzicht"; }
+    catch { return "overzicht"; }
+  });
+  const selectTab = (id) => {
+    setTab(id);
+    try { localStorage.setItem("tradebot.tab", id); } catch { /* private mode */ }
+  };
 
   const fetchAll = useCallback(async () => {
     try {
@@ -1806,6 +1877,19 @@ export default function Dashboard() {
     const id = setInterval(fetchAll, 5000);
     return () => clearInterval(id);
   }, [fetchAll]);
+
+  // Aantal openstaande leervoorstellen — als badge op de Leren-tab, zodat een
+  // voorstel niet ongezien blijft nu die sectie achter een tab zit.
+  const [pendingProposals, setPendingProposals] = useState(0);
+  useEffect(() => {
+    const load = () => fetch(`${API_URL}/learning/proposals`)
+      .then(r => r.json())
+      .then(d => setPendingProposals(d.pending || 0))
+      .catch(() => {});
+    load();
+    const id = setInterval(load, 30000);
+    return () => clearInterval(id);
+  }, []);
 
   async function startBot() {
     setLoading(true);
@@ -1841,7 +1925,7 @@ export default function Dashboard() {
     <div className="main-container" style={{
       minHeight: "100vh", background: C.bg, color: C.text,
       fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif",
-      padding: "24px 28px", maxWidth: 1440, margin: "0 auto",
+      padding: "18px 24px", maxWidth: 1600, margin: "0 auto",
     }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
@@ -1872,9 +1956,19 @@ export default function Dashboard() {
         .closed-row:hover { background: #fafbfd; }
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
         .pulse { animation: pulse 2s infinite; }
+        /* Op brede schermen mag de statistiekenrij de volle breedte benutten
+           in plaats van 7 kaarten die net niet passen en gaan wrappen. */
+        @media (min-width: 1280px) {
+          .stat-cards-row { display: grid !important; grid-template-columns: repeat(7, 1fr) !important; }
+          .stat-card { min-width: 0 !important; }
+        }
         @media (max-width: 960px) {
           .main-grid { grid-template-columns: 1fr !important; }
           .analytics-grid { grid-template-columns: 1fr !important; }
+        }
+        @media (max-width: 640px) {
+          .tab-bar { width: 100% !important; }
+          .tab-bar button { flex: 1 !important; justify-content: center !important; padding: 8px 6px !important; font-size: 11px !important; }
         }
         @media (max-width: 768px) {
           .main-container { padding: 12px !important; }
@@ -1904,7 +1998,7 @@ export default function Dashboard() {
       <CircuitBreakerBanner status={status} />
 
       {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <div className="header-row" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+      <div className="header-row" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
         <div>
           <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: -0.5, color: C.text }}>
             Trade<span style={{ color: C.blue }}>Bot</span>
@@ -1943,7 +2037,7 @@ export default function Dashboard() {
       )}
 
       {/* ── Stats row ──────────────────────────────────────────────────────── */}
-      <div className="stat-cards-row" style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 24 }}>
+      <div className="stat-cards-row" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
         <StatCard label="Balance"     value={status ? `$${fmt(status.balance, 0)}` : "—"}     sub="USDT vrij"     accent={C.blue}  />
         <StatCard label="Equity"      value={status ? `$${fmt(status.equity,  0)}` : "—"}     sub="USDT totaal"                    />
         <StatCard label="Total PnL"   value={<PnlBadge value={status?.total_pnl} size={18} />}                                     />
@@ -1953,72 +2047,83 @@ export default function Dashboard() {
         <StatCard label="Actief"      value={activeTrades.length}                              sub={activeTrades.length > 0 ? activeTrades.map(t => t.setup_type).join(", ") : "geen"} accent={activeTrades.length > 0 ? C.yellow : undefined} />
       </div>
 
-      {/* ── Main grid ──────────────────────────────────────────────────────── */}
-      <div className="main-grid" style={{ display: "grid", gridTemplateColumns: "260px 1fr", gap: 20, marginBottom: 20 }}>
+      <TabBar tab={tab} onSelect={selectTab}
+              counts={{ trades: closedTrades.length, pending: pendingProposals }} />
 
-        {/* Sidebar */}
-        <div>
-          <ConfigPanel
-            config={config} setConfig={setConfig}
-            isRunning={isRunning} loading={loading}
-            onStart={startBot} onStop={stopBot}
-          />
-          <SetupHealthPanel setupHealth={status?.setup_health} />
-          <AnalysisPanel lastAnalysis={status?.last_analysis} />
-        </div>
+      {/* ── Overzicht: alles wat je dagelijks wilt zien ─────────────────────── */}
+      {tab === "overzicht" && (
+        <>
+          <div className="main-grid" style={{ display: "grid", gridTemplateColumns: "260px 1fr", gap: 14, marginBottom: 14 }}>
+            {/* Sidebar */}
+            <div>
+              <ConfigPanel
+                config={config} setConfig={setConfig}
+                isRunning={isRunning} loading={loading}
+                onStart={startBot} onStop={stopBot}
+              />
+              <SetupHealthPanel setupHealth={status?.setup_health} />
+              <AnalysisPanel lastAnalysis={status?.last_analysis} />
+            </div>
 
-        {/* Main */}
-        <div>
-          {/* Active trades */}
-          <div style={{ marginBottom: 20 }}>
-            <SectionLabel badge={activeTrades.length}>Actieve trades</SectionLabel>
-            {activeTrades.length === 0 ? (
-              <div style={{ background: C.card, borderRadius: 14, boxShadow: C.shadow }}>
-                <EmptyState icon="🔍" text="Geen actieve trades" sub="Bot zoekt naar een setup…" height={100} />
+            {/* Main */}
+            <div>
+              <div style={{ marginBottom: 14 }}>
+                <SectionLabel badge={activeTrades.length}>Actieve trades</SectionLabel>
+                {activeTrades.length === 0 ? (
+                  <div style={{ background: C.card, borderRadius: 14, boxShadow: C.shadow }}>
+                    <EmptyState icon="🔍" text="Geen actieve trades" sub="Bot zoekt naar een setup…" height={90} />
+                  </div>
+                ) : (
+                  activeTrades.map((t, i) => <ActiveTradeCard key={t.id || i} trade={t} />)
+                )}
               </div>
-            ) : (
-              activeTrades.map((t, i) => <ActiveTradeCard key={t.id || i} trade={t} />)
-            )}
+
+              <div style={{ background: C.card, borderRadius: 14, padding: 16, boxShadow: C.shadow }}>
+                <SectionLabel>Equity Curve</SectionLabel>
+                <EquityCurve history={stats?.equity_history} />
+              </div>
+            </div>
           </div>
 
-          {/* Equity curve */}
-          <div style={{ background: C.card, borderRadius: 14, padding: 20, boxShadow: C.shadow }}>
-            <SectionLabel>Equity Curve</SectionLabel>
-            <EquityCurve history={stats?.equity_history} />
+          <div className="analytics-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+            <div style={{ background: C.card, borderRadius: 14, padding: 16, boxShadow: C.shadow }}>
+              <SectionLabel>Dagelijks PnL</SectionLabel>
+              <DailyPnlChart data={stats?.daily_pnl} />
+            </div>
+            <div style={{ background: C.card, borderRadius: 14, padding: 16, boxShadow: C.shadow }}>
+              <SectionLabel>Setup statistieken</SectionLabel>
+              <SetupStatsGrid stats={stats?.setup_stats} />
+            </div>
           </div>
-        </div>
-      </div>
+        </>
+      )}
 
-      {/* ── Live Candle Chart ──────────────────────────────────────────────── */}
-      <div style={{ marginBottom: 20 }}>
-        <LiveCandleChart trades={allTrades} />
-      </div>
+      {/* ── Trades: volledige historie ──────────────────────────────────────── */}
+      {tab === "trades" && (
+        <>
+          <SectionLabel badge={closedTrades.length}>Gesloten trades</SectionLabel>
+          <ClosedTradesTable trades={closedTrades} />
+        </>
+      )}
 
-      {/* ── Analytics ──────────────────────────────────────────────────────── */}
-      <div className="analytics-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 20 }}>
-        <div style={{ background: C.card, borderRadius: 14, padding: 20, boxShadow: C.shadow }}>
-          <SectionLabel>Dagelijks PnL</SectionLabel>
-          <DailyPnlChart data={stats?.daily_pnl} />
-        </div>
-        <div style={{ background: C.card, borderRadius: 14, padding: 20, boxShadow: C.shadow }}>
-          <SectionLabel>Setup statistieken</SectionLabel>
-          <SetupStatsGrid stats={stats?.setup_stats} />
-        </div>
-      </div>
+      {/* ── Analyse: grafiek + de zware rekenpanelen ────────────────────────── */}
+      {tab === "analyse" && (
+        <>
+          <div style={{ marginBottom: 14 }}>
+            <LiveCandleChart trades={allTrades} />
+          </div>
+          <BacktestPanel />
+          <MonteCarloPanel />
+        </>
+      )}
 
-      {/* ── Backtest ───────────────────────────────────────────────────────── */}
-      <BacktestPanel />
-
-      {/* ── Monte Carlo ────────────────────────────────────────────────────── */}
-      <MonteCarloPanel />
-
-      {/* ── Self-learning proposals ─────────────────────────────────────────── */}
-      <ActiveSettingsPanel />
-      <LearningPanel />
-
-      {/* ── Closed trades ──────────────────────────────────────────────────── */}
-      <SectionLabel badge={closedTrades.length}>Gesloten trades</SectionLabel>
-      <ClosedTradesTable trades={closedTrades} />
+      {/* ── Leren: instellingen + voorstellen ───────────────────────────────── */}
+      {tab === "leren" && (
+        <>
+          <ActiveSettingsPanel />
+          <LearningPanel />
+        </>
+      )}
 
       <div style={{ marginTop: 28, textAlign: "center", color: C.dim, fontSize: 9, letterSpacing: 1.5 }}>
         VERVERST ELKE 5S · {new Date().toLocaleTimeString("nl-NL")} · USE AT YOUR OWN RISK
