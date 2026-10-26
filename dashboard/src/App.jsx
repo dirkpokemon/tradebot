@@ -1338,6 +1338,111 @@ const PARAM_META = {
 // Interne bookkeeping-sleutels: geen strategie-instelling, dus niet tonen.
 const HIDDEN_PARAMS = new Set(["last_autotune"]);
 
+// ── Automatisch leren ────────────────────────────────────────────────────────
+// De bot past bewezen verbeteringen zelf toe. Juist omdat er geen goedkeuring meer
+// aan te pas komt, moet hier zichtbaar zijn wat er loopt en wat er eerder gebeurde.
+function AutoLearnPanel() {
+  const [data, setData] = useState(null);
+
+  useEffect(() => {
+    const load = () => fetch(`${API_URL}/learning/auto`)
+      .then(r => r.json()).then(setData).catch(() => {});
+    load();
+    const t = setInterval(load, 30000);
+    return () => clearInterval(t);
+  }, []);
+
+  if (!data) return null;
+
+  const obs = data.observing;
+  const pct = obs ? Math.min(100, Math.round(obs.trades_done / obs.trades_needed * 100)) : 0;
+  const fmtVal = v => (v == null ? "—" : String(v));
+
+  const STATUS = {
+    kept:     { label: "Behouden",      color: C.green, bg: C.greenBg },
+    reverted: { label: "Teruggedraaid", color: C.red,   bg: C.redBg   },
+    active:   { label: "Loopt",         color: C.blue,  bg: C.blueBg  },
+  };
+
+  return (
+    <div style={{ background: C.card, borderRadius: 14, padding: 20, boxShadow: C.shadow, marginBottom: 20 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+        <SectionLabel>🤖 Automatisch leren</SectionLabel>
+        <span style={{
+          fontSize: 9, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.8,
+          color: data.enabled ? C.green : C.muted,
+          background: data.enabled ? C.greenBg : C.bg,
+          border: `1px solid ${data.enabled ? C.green : C.border}`,
+          borderRadius: 99, padding: "2px 9px",
+        }}>
+          {data.enabled ? "Actief" : "Uit"}
+        </span>
+      </div>
+      <div style={{ fontSize: 11, color: C.muted, marginBottom: 14 }}>
+        De bot past bewezen verbeteringen zelf toe — één tegelijk — en draait ze terug als ze niet helpen.
+      </div>
+
+      {obs ? (
+        <div style={{
+          background: C.blueBg, border: `1px solid ${C.blue}44`, borderLeft: `3px solid ${C.blue}`,
+          borderRadius: 10, padding: "12px 14px", marginBottom: 12,
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.text, marginBottom: 2 }}>
+            {obs.param_nl}: {fmtVal(obs.old_value)} → <span style={{ color: C.blue }}>{fmtVal(obs.new_value)}</span>
+          </div>
+          <div style={{ fontSize: 10, color: C.muted, marginBottom: 8 }}>
+            Toegepast op {(obs.applied_at || "").slice(0, 16).replace("T", " ")} UTC ·
+            nulmeting ${Number(obs.baseline_expectancy ?? 0).toFixed(2)} per trade
+          </div>
+          <div style={{ background: C.border, borderRadius: 99, height: 6, overflow: "hidden" }}>
+            <div style={{ width: `${pct}%`, height: "100%", background: C.blue, borderRadius: 99, transition: "width 0.4s" }} />
+          </div>
+          <div style={{ fontSize: 10, color: C.muted, marginTop: 5 }}>
+            {obs.trades_done} van {obs.trades_needed} trades geobserveerd — daarna oordeelt hij zelf
+          </div>
+        </div>
+      ) : (
+        <div style={{
+          fontSize: 11, color: C.muted, background: C.bg, borderRadius: 8,
+          padding: "10px 12px", marginBottom: 12, border: `1px dashed ${C.border}`,
+        }}>
+          Geen lopend experiment — de bot wacht op de volgende backtest-tuning.
+        </div>
+      )}
+
+      {data.history?.length > 0 && (
+        <>
+          <div style={{ fontSize: 9, fontWeight: 700, color: C.dim, textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 6 }}>
+            Eerdere aanpassingen
+          </div>
+          {data.history.filter(h => h.status !== "active").map(h => {
+            const s = STATUS[h.status] || STATUS.active;
+            return (
+              <div key={h.id} style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                gap: 10, flexWrap: "wrap",
+                background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8,
+                padding: "8px 12px", marginBottom: 5,
+              }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: C.text }}>
+                    {h.param}: {fmtVal(h.old_value)} → {fmtVal(h.new_value)}
+                  </div>
+                  <div style={{ fontSize: 9, color: C.muted, marginTop: 1 }}>{h.note}</div>
+                </div>
+                <span style={{
+                  fontSize: 9, fontWeight: 800, color: s.color, background: s.bg,
+                  borderRadius: 4, padding: "2px 7px", whiteSpace: "nowrap",
+                }}>{s.label}</span>
+              </div>
+            );
+          })}
+        </>
+      )}
+    </div>
+  );
+}
+
 function ActiveSettingsPanel() {
   const [data, setData] = useState(null);
 
@@ -2120,6 +2225,7 @@ export default function Dashboard() {
       {/* ── Leren: instellingen + voorstellen ───────────────────────────────── */}
       {tab === "leren" && (
         <>
+          <AutoLearnPanel />
           <ActiveSettingsPanel />
           <LearningPanel />
         </>

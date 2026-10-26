@@ -17,6 +17,7 @@ from db import (clear_trades as db_clear_trades, get_trade_candles, save_review,
                 clear_rejected_proposals)
 from learn import analyze_for_proposals
 from autotune import run_autotune, autotune_state, autotune_stuck
+from autolearn import maybe_auto_apply, evaluate_active_experiment, learning_status
 from backtest import (
     BacktestConfig, backtest_state, run_backtest,
     monte_carlo_state, run_monte_carlo,
@@ -596,6 +597,12 @@ def reject_proposal(proposal_id: str):
     return {"message": f"Afgewezen: {p['description']}"}
 
 
+@app.get("/learning/auto")
+def get_auto_learning():
+    """Staat van het automatisch leren: loopt er een experiment, en wat ging eraan vooraf."""
+    return learning_status()
+
+
 @app.get("/learning/params")
 def get_active_params():
     """
@@ -633,6 +640,9 @@ def _run_autotune_thread():
                 logging.getLogger(__name__).info(
                     f"Autotune: {skipped} advies/adviezen overgeslagen (eerder afgewezen)"
                 )
+            # Bewezen verbetering meteen zelf toepassen (AUTO_LEARN=false zet dit uit).
+            # Hoogstens één per keer, en daarna volgt een observatieperiode.
+            maybe_auto_apply(proposals)
         set_learned_param("last_autotune", datetime.utcnow().isoformat())
     except Exception as e:
         import logging; logging.getLogger(__name__).error(f"Autotune-thread mislukt: {e}")
@@ -674,6 +684,12 @@ def _monthly_autotune_loop():
     time.sleep(120)  # startup even laten settelen
     while True:
         try:
+            # Loopt er een experiment en is de observatieperiode voorbij? Dan nu oordelen.
+            try:
+                evaluate_active_experiment()
+            except Exception as e:
+                log.warning(f"Beoordelen van leerexperiment mislukt: {e}")
+
             if (not autotune_state.running or autotune_stuck()) and not backtest_state.running:
                 last = get_learned_params().get("last_autotune")
                 due = True

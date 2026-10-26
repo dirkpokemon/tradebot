@@ -40,6 +40,7 @@ git commit -m "rebuild dashboard"
 | `TRADE_MODE` | `daytrade` (default, triggers on 15m close) or `scalp` (triggers on 5m close, tighter TPs) |
 | `DB_PATH` | Path to SQLite DB, e.g. `/data/trades.db` for Railway volume persistence |
 | `AUTO_START` | `true` (default) = bot starts trading as soon as the service boots; `false` = wait for a manual Start. Without auto-start every redeploy silently halts trading until someone clicks Start. |
+| `AUTO_LEARN` | `true` (default) = the bot applies proven improvements itself, one at a time, and reverts them if they do not hold up. `false` = proposals only, you approve them. |
 | `RAILWAY_URL` | Public URL of the deployment (e.g. `https://xyz.up.railway.app`) — used to auto-register Telegram webhook on startup |
 
 **Deployment:** `Procfile` runs `uvicorn api:app --host 0.0.0.0 --port $PORT` on Railway.
@@ -208,6 +209,8 @@ The JS bundle filename changes on every build (Vite content hash). If you forget
 - ✅ Afgewezen voorstellen komen niet terug: `save_learning_proposals()` slaat adviezen over waarvan de handtekening (type + setup_type + proposed_value) al eens is afgewezen, en geeft terug hoeveel er écht zijn bewaard. Een advies met een *andere* waarde komt wél door. `POST /learning/proposals/allow-rejected` wist de afwijs-geschiedenis (knop "Weer toestaan" in het dashboard).
 - ✅ Self-learning (`learn.py`): analyse van gesloten trades op **expectancy/profit factor** (nooit win rate) → voorstellen in `learning_proposals`, gebruiker keurt goed/af via dashboard. Toegepaste params in `learned_params` tabel; `bot.py:_get_learned_analyze_kwargs()` geeft ze door aan elke `analyze()`-call.
 - ✅ Autotune (`autotune.py`): maandelijkse (30d, checkloop in `api.py`) walk-forward backtest-sweep over SL-multiplier (1.5/1.75/2.0×ATR) en min R:R (2.0/2.5/3.0) — één parameter per keer. Beste variant → `backtest_param` voorstel; factor-analyse over backtest-trades → `factor_insight` voorstel. Handmatig via `POST /learning/autotune` of dashboard-knop 🔬. Kernsetups (rotation/continuation) mogen NOOIT hard uitgeschakeld worden — dat legt de bot stil (deadlock: disabled setup kan win rate nooit herstellen).
+
+- ✅ Automatisch leren (`autolearn.py`): na een autotune-sweep past de bot HOOGSTENS ÉÉN bewezen verbetering zelf toe, uit `AUTO_PARAMS` (sl_atr_mult, min_rr, min_score_global) en alleen binnen harde grenzen. Elke wijziging is een *experiment* in `learning_experiments`: de expectancy van de 20 trades ervóór wordt als nulmeting vastgelegd, daarna volgt een observatieperiode (20 trades of 60 dagen) waarin niets anders verandert. Daarna vergelijkt `evaluate_active_experiment()` — slechter dan de nulmeting → parameter terug naar de oude waarde én het advies op de afwijs-lijst, zodat het niet opnieuw wordt geprobeerd. Telegram meldt elke aanpassing, bevestiging en terugdraaiing; het dashboard toont het in `AutoLearnPanel`. Structurele ingrepen (setup uitschakelen, richtingfilter, handelsmodus) blijven BEWUST handmatig — die kunnen de handel in één keer stilleggen.
 
 ### Fase 3 — Strategie gezondheid
 - **Auto-disable per setup**: als een setup de afgelopen 20 trades onder 40% win rate zakt, tijdelijk uitschakelen. Automatisch herstellen als historische performance terugkomt.

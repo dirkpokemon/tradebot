@@ -80,6 +80,23 @@ CREATE TABLE IF NOT EXISTS learning_proposals (
 );
 """
 
+_CREATE_LEARNING_EXPERIMENTS = """
+CREATE TABLE IF NOT EXISTS learning_experiments (
+    id                  TEXT PRIMARY KEY,
+    param               TEXT,
+    old_value           TEXT,
+    new_value           TEXT,
+    applied_at          TEXT,
+    baseline_n          INTEGER,
+    baseline_expectancy REAL,
+    status              TEXT DEFAULT 'active',
+    decided_at          TEXT,
+    result_n            INTEGER,
+    result_expectancy   REAL,
+    note                TEXT
+);
+"""
+
 _CREATE_LEARNED_PARAMS = """
 CREATE TABLE IF NOT EXISTS learned_params (
     key        TEXT PRIMARY KEY,
@@ -128,6 +145,7 @@ def init_db():
         c.execute(_CREATE_SIGNAL_REVIEWS)
         c.execute(_CREATE_LEARNING_PROPOSALS)
         c.execute(_CREATE_LEARNED_PARAMS)
+        c.execute(_CREATE_LEARNING_EXPERIMENTS)
         for sql in _MIGRATIONS:
             try:
                 c.execute(sql)
@@ -450,3 +468,123 @@ def set_learned_param(key: str, value):
 def delete_learned_param(key: str):
     with _conn() as c:
         c.execute("DELETE FROM learned_params WHERE key=?", (key,))
+
+
+# ── Leerexperimenten ─────────────────────────────────────────────────────────
+# Elke automatisch toegepaste wijziging is een experiment: we leggen vast wat de
+# prestatie vóór de wijziging was, laten hem een tijd lopen, en vergelijken daarna.
+# Zonder die meting zou de bot alleen maar afdrijven in plaats van leren.
+
+def save_experiment(exp: dict):
+    import json
+    with _conn() as c:
+        c.execute("""
+            INSERT INTO learning_experiments
+            (id, param, old_value, new_value, applied_at, baseline_n,
+             baseline_expectancy, status, decided_at, result_n, result_expectancy, note)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            exp["id"], exp["param"],
+            json.dumps(exp["old_value"]), json.dumps(exp["new_value"]),
+            exp["applied_at"], exp.get("baseline_n"), exp.get("baseline_expectancy"),
+            exp.get("status", "active"), exp.get("decided_at"),
+            exp.get("result_n"), exp.get("result_expectancy"), exp.get("note"),
+        ))
+
+
+def _row_to_experiment(row) -> dict:
+    import json
+    d = dict(row)
+    for key in ("old_value", "new_value"):
+        try:
+            d[key] = json.loads(d[key])
+        except Exception:
+            pass
+    return d
+
+
+def get_active_experiment() -> dict | None:
+    """Het lopende experiment, of None als er niets in observatie staat."""
+    try:
+        with _conn() as c:
+            c.row_factory = sqlite3.Row
+            row = c.execute(
+                "SELECT * FROM learning_experiments WHERE status='active' "
+                "ORDER BY applied_at DESC LIMIT 1"
+            ).fetchone()
+        return _row_to_experiment(row) if row else None
+    except Exception:
+        return None
+
+
+def get_experiments(limit: int = 20) -> list[dict]:
+    try:
+        with _conn() as c:
+            c.row_factory = sqlite3.Row
+            rows = c.execute(
+                "SELECT * FROM learning_experiments ORDER BY applied_at DESC LIMIT ?",
+                (limit,)
+            ).fetchall()
+        return [_row_to_experiment(r) for r in rows]
+    except Exception:
+        return []
+
+
+def close_experiment(exp_id: str, status: str, result_n: int = None,
+                     result_expectancy: float = None, note: str = ""):
+    """Rond een experiment af: 'kept' (wijziging blijft) of 'reverted' (teruggedraaid)."""
+    from datetime import datetime
+    with _conn() as c:
+        c.execute(
+            "UPDATE learning_experiments SET status=?, decided_at=?, result_n=?, "
+            "result_expectancy=?, note=? WHERE id=?",
+            (status, datetime.utcnow().isoformat(), result_n, result_expectancy, note, exp_id)
+        )
+
+
+def blacklist_proposal(ptype: str, setup_type, proposed_value, description: str, reason: str):
+    """
+    Zet een advies op de afwijs-lijst zodat het niet opnieuw wordt voorgesteld.
+    Gebruikt voor wijzigingen die de bot zelf heeft teruggedraaid: één keer
+    geprobeerd, aantoonbaar slechter, niet nog eens.
+    """
+    import json, uuid
+    from datetime import datetime
+    now = datetime.utcnow().isoformat()
+    with _conn() as c:
+        c.execute("""
+            INSERT INTO learning_proposals
+            (id, type, setup_type, description, current_value, proposed_value,
+             reasoning, win_rate_before, win_rate_after, sample_size, status, created_at, decided_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,'rejected',?,?)
+        """, (
+            str(uuid.uuid4()), ptype, setup_type, description,
+            json.dumps(None), json.dumps(proposed_value), reason,
+            None, None, None, now, now,
+        ))
+
+
+def closed_trades_for_learning(since: str = None, limit: int = None) -> list[dict]:
+    """
+    Gesloten trades met een PnL, oplopend op tijd. `since` filtert op trades die
+    ná dat ISO-tijdstip zijn geopend; `limit` geeft de laatste N terug.
+    """
+    try:
+        with _conn() as c:
+            c.row_factory = sqlite3.Row
+            if since:
+                rows = c.execute(
+                    "SELECT timestamp, realized_pnl, setup_type, side FROM trades "
+                    "WHERE status='closed' AND realized_pnl IS NOT NULL AND timestamp > ? "
+                    "ORDER BY timestamp ASC", (since,)
+                ).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT timestamp, realized_pnl, setup_type, side FROM trades "
+                    "WHERE status='closed' AND realized_pnl IS NOT NULL "
+                    "ORDER BY timestamp ASC"
+                ).fetchall()
+        result = [dict(r) for r in rows]
+        return result[-limit:] if limit else result
+    except Exception:
+        return []
