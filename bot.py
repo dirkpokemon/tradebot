@@ -143,8 +143,18 @@ def send_telegram(message: str):
 
 
 def get_public_exchange():
-    """OKX publieke API voor marktdata — geen auth nodig."""
-    return ccxt.okx({'options': {'defaultType': 'swap'}})
+    """
+    OKX publieke API voor marktdata — geen auth nodig.
+
+    timeout: zonder harde grens kan één call blijven hangen en daarmee de hele
+    lus (of een backtest) stilleggen. enableRateLimit: een backtest doet tientallen
+    requests achter elkaar; ccxt spreidt ze dan zelf i.p.v. throttling te riskeren.
+    """
+    return ccxt.okx({
+        'options': {'defaultType': 'swap'},
+        'timeout': 15000,
+        'enableRateLimit': True,
+    })
 
 def get_exchange():
     """OKX met auth — alleen nodig in LIVE mode voor orderplaatsing."""

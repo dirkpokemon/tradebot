@@ -16,7 +16,7 @@ from db import (clear_trades as db_clear_trades, get_trade_candles, save_review,
                 get_learned_params_meta, count_suppressed_proposals,
                 clear_rejected_proposals)
 from learn import analyze_for_proposals
-from autotune import run_autotune, autotune_state
+from autotune import run_autotune, autotune_state, autotune_stuck
 from backtest import (
     BacktestConfig, backtest_state, run_backtest,
     monte_carlo_state, run_monte_carlo,
@@ -611,8 +611,13 @@ def _run_autotune_thread():
 
 @app.post("/learning/autotune")
 def start_autotune():
-    if autotune_state.running:
+    if autotune_state.running and not autotune_stuck():
         raise HTTPException(status_code=400, detail="Autotune draait al")
+    if autotune_stuck():
+        # Vorige run hangt; vlag negeren zodat één vastloper de tuning niet
+        # voorgoed blokkeert (dat gebeurde: zes dagen vast = nooit meer gedraaid).
+        import logging
+        logging.getLogger(__name__).warning("Vorige autotune hangt — nieuwe run gestart")
     if backtest_state.running:
         raise HTTPException(status_code=400, detail="Er draait al een backtest — wacht tot die klaar is")
     t = threading.Thread(target=_run_autotune_thread, daemon=True)
@@ -624,6 +629,7 @@ def start_autotune():
 def get_autotune_status():
     return {
         "running":  autotune_state.running,
+        "stuck":    autotune_stuck(),
         "progress": round(autotune_state.progress * 100),
         "step":     autotune_state.step,
         "error":    autotune_state.error,
@@ -639,7 +645,7 @@ def _monthly_autotune_loop():
     time.sleep(120)  # startup even laten settelen
     while True:
         try:
-            if not autotune_state.running and not backtest_state.running:
+            if (not autotune_state.running or autotune_stuck()) and not backtest_state.running:
                 last = get_learned_params().get("last_autotune")
                 due = True
                 if last:

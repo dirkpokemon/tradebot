@@ -142,24 +142,56 @@ monte_carlo_state = MonteCarloState()
 # ─── Helpers ───────────────────────────────────────────────────────────────────
 
 def fetch_ohlcv_paginated(exchange, symbol: str, timeframe: str, days: int, per_page: int = 300) -> list:
-    """Haal historische candles op in meerdere requests (OKX cap = 300 per request)."""
+    """
+    Haal historische candles op in meerdere requests (OKX cap = 300 per request).
+
+    De lus heeft twee remmen, omdat hij ze allebei nodig heeft gehad: een
+    maandelijkse autotune bleef hier zes dagen in hangen. Negeert de beurs de
+    `since`-parameter (OKX doet dat voor data ver terug op dit endpoint), dan komt
+    telkens hetzelfde meest recente venster terug. De oude afbreekvoorwaarde
+    `nieuwste >= nu` kon daarbij nooit kloppen — de nieuwste candle opent immers
+    altijd tot één interval vóór nu — dus draaide hij eindeloos door.
+    """
     tf_minutes = {'1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '4h': 240, '1d': 1440}
-    tf_ms      = tf_minutes.get(timeframe, 15) * 60 * 1000
+    tf_min     = tf_minutes.get(timeframe, 15)
+    tf_ms      = tf_min * 60 * 1000
 
     now_ms    = int(time.time() * 1000)
     since_ms  = now_ms - days * 24 * 60 * 60 * 1000
 
+    # Wat theoretisch nodig is om de periode te dekken, plus ruime marge.
+    max_pages = math.ceil(days * 24 * 60 / tf_min / per_page) + 5
+
     all_candles: list = []
     current_since = since_ms
 
-    while True:
+    for page in range(max_pages):
         batch = exchange.fetch_ohlcv(symbol, timeframe, since=current_since, limit=per_page)
         if not batch:
             break
         all_candles.extend(batch)
-        if len(batch) < per_page or batch[-1][0] >= now_ms:
+
+        if len(batch) < per_page:
+            break  # laatste pagina
+
+        newest = batch[-1][0]
+        if newest + tf_ms >= now_ms:
+            break  # bij het heden aangekomen
+
+        next_since = newest + tf_ms
+        if next_since <= current_since:
+            # Geen voortgang: de beurs geeft steeds hetzelfde venster terug.
+            logger.warning(
+                f"Candle-fetch maakt geen voortgang op {timeframe} (since blijft "
+                f"{current_since}) — gestopt na {len(all_candles)} candles"
+            )
             break
-        current_since = batch[-1][0] + tf_ms
+        current_since = next_since
+    else:
+        logger.warning(
+            f"Candle-fetch bereikte de paginalimiet ({max_pages}) voor {days}d {timeframe} "
+            f"— mogelijk onvolledige historie ({len(all_candles)} candles)"
+        )
 
     # Dedupliceer en sorteer op timestamp
     seen, unique = set(), []

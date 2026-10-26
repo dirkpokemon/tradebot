@@ -179,7 +179,11 @@ The JS bundle filename changes on every build (Vite content hash). If you forget
 
 **Dashboard dist/ must be force-committed after every rebuild.** The `dist/` directory is in `.gitignore`. After `npm run build`, always run `git add -f dashboard/dist/` before committing. If only `index.html` is committed but the new JS bundle file is not, the deployed site loads a blank page.
 
-**Verify imports after large changes.** After big refactors, run `python -c "from api import app; print('OK')"` to catch import errors before pushing.
+**Candle pagination must always terminate.** `fetch_ohlcv_paginated` in `backtest.py` once hung the monthly autotune for six days. When OKX ignores `since` (it does for data far back on `/market/candles`) it returns the same most-recent window on every call, and the old exit test `newest >= now_ms` could never fire — the newest candle opens up to one interval *before* now, so `since` never advanced. The loop now has a page cap and aborts when `since` stops advancing. Keep both brakes in any change here.
+
+**A stuck background job must not block itself forever.** After that hang, `autotune_state.running` stayed `True`, so the monthly loop and the dashboard button both refused to start ("draait al") until a redeploy — the feature was dead for six days without a single error in the logs. `autotune_stuck()` ignores the flag after `MAX_RUNTIME_S`. Use the same pattern for any new long-running job, and give network clients an explicit `timeout`.
+
+**Verify imports after large changes.** After big refactors, run `python3 -m pip install -r requirements.txt` and then `python3 -c "from api import app; print('OK')"` to catch import errors before pushing. In this container plain `pip` and `python3` can resolve to different interpreters — use `python3 -m pip` to be sure they match.
 
 ## Roadmap
 

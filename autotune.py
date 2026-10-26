@@ -62,9 +62,25 @@ class AutotuneState:
     error:    str = ""
     last_run: Optional[str] = None
     summary:  Optional[dict] = None  # compacte vergelijkingstabel van de laatste run
+    started_at: float = 0.0      # time.time() van de lopende run; 0 = niets actief
 
 
 autotune_state = AutotuneState()
+
+# Een volledige sweep is vijf backtests en duurt minuten. Duurt het langer dan dit,
+# dan hangt de run — en dan mag hij de functie niet blijven blokkeren. Python kan een
+# vastzittende thread niet afbreken, dus de vlag wordt genegeerd in plaats van gedood;
+# de vastzittende thread loopt hooguit nog wat door en schrijft daarna niets meer weg.
+MAX_RUNTIME_S = 30 * 60
+
+
+def autotune_stuck() -> bool:
+    """True als er een run loopt die zo lang bezig is dat hij vrijwel zeker vastzit."""
+    return (
+        autotune_state.running
+        and autotune_state.started_at > 0
+        and (time.time() - autotune_state.started_at) > MAX_RUNTIME_S
+    )
 
 
 def _fmt_pf(pf):
@@ -170,6 +186,7 @@ def run_autotune(exchange, days: int = 150, test_pct: float = 0.35) -> list[dict
     autotune_state.progress = 0.0
     autotune_state.summary = None
     t0 = time.time()
+    autotune_state.started_at = t0
 
     try:
         # Huidige (geleerde of default) instellingen vormen de baseline
@@ -269,5 +286,6 @@ def run_autotune(exchange, days: int = 150, test_pct: float = 0.35) -> list[dict
         return []
     finally:
         autotune_state.running = False
+        autotune_state.started_at = 0.0
         autotune_state.progress = 1.0
         autotune_state.step = ""
