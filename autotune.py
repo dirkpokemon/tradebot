@@ -51,7 +51,47 @@ FACTOR_NL = {
 }
 
 MIN_TRADES = 10          # minimaal aantal trades in het testvenster per variant
-MIN_EXPECTANCY_GAIN = 1.15  # variant moet ≥15% hogere expectancy hebben dan baseline
+
+# Waar een variant op beoordeeld wordt. Dit was ooit expectancy per trade plus
+# profit factor — allebei verhoudingsgetallen, en daar scoort minder-maar-beter
+# altijd goed op. Gevolg: drie aanscherpingen op rij (score 50→65, R:R 2.0→3.0,
+# SL 1.5→1.75) die elk "bewezen" waren terwijl het totaalrendement niet meegewogen
+# werd. Nu telt wat je aan het eind overhoudt, met remmen tegen ontsporen.
+MIN_TOTAL_GAIN      = 1.15  # totaalresultaat moet ≥15% beter dan de baseline
+MIN_FREQUENCY_RATIO = 0.75  # en mag het aantal trades niet onder 75% van de baseline duwen
+MAX_DRAWDOWN_RATIO  = 1.50  # en de drawdown niet meer dan anderhalf keer zo diep maken
+
+
+def _beats_baseline(base: dict, r: dict) -> tuple[bool, str]:
+    """
+    Is deze variant écht beter? Geeft (ja/nee, reden) terug — de reden gaat de logs
+    in, zodat zichtbaar is waaróp een variant afviel.
+    """
+    if r["total_trades"] < MIN_TRADES:
+        return False, f"te weinig trades ({r['total_trades']} < {MIN_TRADES})"
+
+    floor = base["total_trades"] * MIN_FREQUENCY_RATIO
+    if r["total_trades"] < floor:
+        return False, (f"knijpt de frequentie te ver dicht "
+                       f"({r['total_trades']} vs {base['total_trades']} trades)")
+
+    pf = r["profit_factor"]
+    if pf is not None and pf < 1.0:
+        return False, f"niet winstgevend (PF {pf})"
+
+    base_dd, var_dd = base.get("max_drawdown_pct") or 0, r.get("max_drawdown_pct") or 0
+    if base_dd > 0 and var_dd > base_dd * MAX_DRAWDOWN_RATIO:
+        return False, f"drawdown loopt te ver op ({var_dd}% vs {base_dd}%)"
+
+    base_total, var_total = base["total_pnl"], r["total_pnl"]
+    if base_total <= 0:
+        better = var_total > 0
+    else:
+        better = var_total >= base_total * MIN_TOTAL_GAIN
+    if not better:
+        return False, f"totaalresultaat niet beter (${var_total:+.0f} vs ${base_total:+.0f})"
+
+    return True, f"${var_total:+.0f} vs ${base_total:+.0f} over {r['total_trades']} trades"
 
 
 @dataclass
@@ -209,7 +249,8 @@ def run_autotune(exchange, days: int = 150, test_pct: float = 0.35) -> list[dict
 
         rows = [{**current, "label": "baseline (huidig)",
                  "trades": base["total_trades"], "win_rate": base["win_rate"],
-                 "profit_factor": base["profit_factor"], "expectancy": base["expectancy"]}]
+                 "profit_factor": base["profit_factor"], "expectancy": base["expectancy"],
+                 "total_pnl": base["total_pnl"]}]
 
         best_variant, best_result = None, None
         for i, v in enumerate(VARIANTS):
@@ -225,18 +266,13 @@ def run_autotune(exchange, days: int = 150, test_pct: float = 0.35) -> list[dict
 
             rows.append({**overrides, "label": f"{v['param']}={v['value']}",
                          "trades": r["total_trades"], "win_rate": r["win_rate"],
-                         "profit_factor": r["profit_factor"], "expectancy": r["expectancy"]})
+                         "profit_factor": r["profit_factor"], "expectancy": r["expectancy"],
+                         "total_pnl": r["total_pnl"]})
 
-            if r["total_trades"] < MIN_TRADES:
-                continue
-            base_exp = base["expectancy"]
-            improves_exp = (base_exp <= 0 and r["expectancy"] > 0) or \
-                           (base_exp > 0 and r["expectancy"] >= base_exp * MIN_EXPECTANCY_GAIN)
-            base_pf = base["profit_factor"] or 0
-            var_pf  = r["profit_factor"] or 0
-            if improves_exp and var_pf > base_pf:
-                if not best_result or r["expectancy"] > best_result["expectancy"]:
-                    best_variant, best_result = v, r
+            ok, reden = _beats_baseline(base, r)
+            logger.info(f"Autotune {v['param']}={v['value']}: {'kandidaat' if ok else 'afgevallen'} — {reden}")
+            if ok and (not best_result or r["total_pnl"] > best_result["total_pnl"]):
+                best_variant, best_result = v, r
 
         autotune_state.summary = {
             "rows": rows,
@@ -257,12 +293,13 @@ def run_autotune(exchange, days: int = 150, test_pct: float = 0.35) -> list[dict
                 "proposed_value": value,
                 "reasoning": (
                     f"Walk-forward backtest over {days} dagen (testvenster {base.get('test_period','')}): "
-                    f"met {PARAM_NL.get(param, param)} = {value} steeg de expectancy van "
-                    f"${base['expectancy']:.0f} naar ${best_result['expectancy']:.0f} per trade en de "
-                    f"profit factor van {_fmt_pf(base['profit_factor'])} naar {_fmt_pf(best_result['profit_factor'])} "
-                    f"({best_result['total_trades']} vs {base['total_trades']} trades, win rate "
-                    f"{base['win_rate']}% → {best_result['win_rate']}%). "
-                    f"Let op: één testvenster — resultaat kan aan de periode liggen."
+                    f"met {PARAM_NL.get(param, param)} = {value} ging het totaalresultaat van "
+                    f"${base['total_pnl']:+.0f} naar ${best_result['total_pnl']:+.0f} over het venster, "
+                    f"bij {best_result['total_trades']} trades tegenover {base['total_trades']} "
+                    f"(profit factor {_fmt_pf(base['profit_factor'])} → {_fmt_pf(best_result['profit_factor'])}, "
+                    f"win rate {base['win_rate']}% → {best_result['win_rate']}%). "
+                    f"Beoordeeld op totale winst, niet op winst per trade — anders wint altijd "
+                    f"minder-maar-beter. Let op: één testvenster."
                 ),
                 "win_rate_before": round(base["win_rate"] / 100, 3),
                 "win_rate_after": round(best_result["win_rate"] / 100, 3),

@@ -71,14 +71,12 @@ The `analyze()` function is the single entry point. Full signature:
 analyze(candles_15m, candles_1h, cooldown_candles=0, candles_4h=None, candles_5m=None, session_filter=True, disabled_setups=None, scalp_mode=False)
 ```
 
-Market structure is determined on 1H. Four setups are checked in priority order:
+Market structure is determined on 1H. **Only two setups exist in the code** — `_detect_signal()` calls these and nothing else:
 
-1. **Liquidity Sweep** — price wicks through a key level, immediately reverses. 5m SL refinement via `_refine_sl_with_5m()`.
-2. **Rotation** — structural break (uptrend makes LL / downtrend makes HH) + rejection candle or engulfing
-3. **Breakout** — candle closes beyond a key level, retest of that level with confirmation
-4. **Continuation** — pullback to a flipped level (old resistance → new support) in a clear trend
+1. **Rotation** — `check_rotation()`: complete L→H→HL→HH (or H→L→LH→LL) construction, entry on the pullback
+2. **Continuation** — `check_continuation()`: pullback to a flipped level (old resistance → new support) in a clear trend
 
-**Range setup has been removed** from both code and UI.
+**Liquidity Sweep and Breakout no longer exist.** The functions were removed; only the two above remain. Range was removed earlier. Re-adding a setup means writing and backtesting it from scratch — it is not a matter of re-wiring. This directly caps trade frequency at roughly 100/year.
 
 Each checker returns a `Signal` dataclass or `None`. The first non-`None` result wins. After detection, `analyze()` validates minimum R:R of 2.5 (on TP3) and runs `calculate_context_score()`. Signals scoring below 50 are rejected.
 
@@ -150,7 +148,7 @@ Single-file React SPA. Reads `VITE_API_URL` at build time (defaults to `http://l
 - `CandleChart` — SVG candlestick chart using stored candle snapshot
 - Header badges: DAYTRADE/SCALP mode tag, HUMAN APPROVAL tag (yellow, only shown when active)
 
-**SETUP_META:** Only 4 entries — liquidity_sweep, rotation, breakout, continuation. Range has been removed.
+**SETUP_META:** rotation and continuation — the only two setups the strategy implements.
 
 ### dashboard/dist/ — pre-built frontend
 `dist/` is in `.gitignore`. After every rebuild, force-add with:
@@ -188,6 +186,8 @@ The JS bundle filename changes on every build (Vite content hash). If you forget
 **A backtest must not log per candle.** `analyze()` writes several INFO lines on every call, so a backtest over a few thousand candles emits thousands of lines per second. Railway caps a replica at 500 logs/sec and drops the rest — in one run ~12,000 messages vanished, including the backtest's own result lines, which made a perfectly healthy autotune look like it had hung. `run_backtest` now wraps the whole run in `_quiet_strategy_logging()`, which lifts the `strategy` logger to WARNING and restores it afterwards. Keep any new high-volume loop out of INFO.
 
 **A redeploy must not silently stop trading.** `state.running` lives in memory and only `POST /start` used to set it, so every deploy left the bot idle until someone noticed and clicked Start — once for half a day. `auto_start_bot()` now launches the loop on boot (disable with `AUTO_START=false`). Both it and `/start` go through `_launch_bot_thread()`, which refuses to start a second loop.
+
+**Optimise on total profit, never on per-trade ratios.** Autotune used to pick a variant on expectancy *per trade* plus profit factor. Both are ratios, so "fewer but better trades" always wins — even when it earns less money. Three tightenings stacked up that way (score 50→65, R:R 2.0→3.0, SL 1.5→1.75×ATR), each individually "proven", together throttling the bot: on one day 11 signals were rejected on score alone, three of them at 60 against a bar of 65. `_beats_baseline()` now judges on `total_pnl` over the test window, and refuses any variant that drops below 75% of the baseline's trade count, falls under profit factor 1.0, or deepens drawdown by more than half. Keep a frequency floor in any future objective.
 
 **Verify imports after large changes.** After big refactors, run `python3 -m pip install -r requirements.txt` and then `python3 -c "from api import app; print('OK')"` to catch import errors before pushing. In this container plain `pip` and `python3` can resolve to different interpreters — use `python3 -m pip` to be sure they match.
 
