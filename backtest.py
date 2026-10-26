@@ -18,6 +18,7 @@ import math
 import random
 import time
 import logging
+from contextlib import contextmanager
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 from datetime import datetime, timezone
@@ -490,7 +491,32 @@ def run_monte_carlo(
 
 # ─── Main Backtester ───────────────────────────────────────────────────────────
 
+@contextmanager
+def _quiet_strategy_logging():
+    """
+    Dempt de INFO-stroom van strategy.analyze() tijdens een backtest.
+
+    analyze() logt per aanroep meerdere regels; over een testvenster van duizenden
+    candles levert dat duizenden regels per seconde op. Railway kapt af op 500/sec
+    en gooit de rest weg — inclusief de uitkomstregels van de backtest zelf, waardoor
+    een geslaagde run eruitzag alsof hij halverwege was blijven hangen.
+    Waarschuwingen en fouten komen er gewoon doorheen.
+    """
+    strategy_logger = logging.getLogger('strategy')
+    previous = strategy_logger.level
+    strategy_logger.setLevel(logging.WARNING)
+    try:
+        yield
+    finally:
+        strategy_logger.setLevel(previous)
+
+
 def run_backtest(config: BacktestConfig, exchange) -> BacktestResult:
+    with _quiet_strategy_logging():
+        return _run_backtest(config, exchange)
+
+
+def _run_backtest(config: BacktestConfig, exchange) -> BacktestResult:
     t_start = time.time()
     result  = BacktestResult(config=asdict(config))
 

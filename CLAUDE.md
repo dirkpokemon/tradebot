@@ -183,6 +183,8 @@ The JS bundle filename changes on every build (Vite content hash). If you forget
 
 **A stuck background job must not block itself forever.** After that hang, `autotune_state.running` stayed `True`, so the monthly loop and the dashboard button both refused to start ("draait al") until a redeploy — the feature was dead for six days without a single error in the logs. `autotune_stuck()` ignores the flag after `MAX_RUNTIME_S`. Use the same pattern for any new long-running job, and give network clients an explicit `timeout`.
 
+**A backtest must not log per candle.** `analyze()` writes several INFO lines on every call, so a backtest over a few thousand candles emits thousands of lines per second. Railway caps a replica at 500 logs/sec and drops the rest — in one run ~12,000 messages vanished, including the backtest's own result lines, which made a perfectly healthy autotune look like it had hung. `run_backtest` now wraps the whole run in `_quiet_strategy_logging()`, which lifts the `strategy` logger to WARNING and restores it afterwards. Keep any new high-volume loop out of INFO.
+
 **Verify imports after large changes.** After big refactors, run `python3 -m pip install -r requirements.txt` and then `python3 -c "from api import app; print('OK')"` to catch import errors before pushing. In this container plain `pip` and `python3` can resolve to different interpreters — use `python3 -m pip` to be sure they match.
 
 ## Roadmap
