@@ -27,17 +27,37 @@ from backtest import BacktestConfig, run_backtest
 logger = logging.getLogger(__name__)
 
 # Sweep: baseline + één-parameter-per-keer varianten
-BASELINE = {"sl_atr_mult": 1.5, "min_rr": 2.0}
-VARIANTS = [
-    {"param": "sl_atr_mult", "value": 1.75},
-    {"param": "sl_atr_mult", "value": 2.0},
-    {"param": "min_rr",      "value": 2.5},
-    {"param": "min_rr",      "value": 3.0},
-]
+BASELINE = {"sl_atr_mult": 1.5, "min_rr": 2.0, "min_score_global": 50}
+
+# Mogelijke waarden per parameter, oplopend. Er worden alleen de directe buren van
+# de huidige instelling getest: één stap strenger én één stap soepeler. Dat houdt
+# het bij één kleine stap tegelijk, en — belangrijker — het maakt versoepelen
+# überhaupt mogelijk. De oude lijst bevatte enkel vaste waarden bóven de default,
+# waardoor de bot zichzelf alleen maar verder kon dichtknijpen.
+PARAM_GRID = {
+    "sl_atr_mult":      [1.25, 1.5, 1.75, 2.0, 2.25],
+    "min_rr":           [2.0, 2.5, 3.0, 3.5],
+    "min_score_global": [45, 50, 55, 60, 65, 70],
+}
+
+
+def _neighbour_variants(current: dict) -> list[dict]:
+    """De buurwaarden van elke huidige instelling — omlaag en omhoog."""
+    variants = []
+    for param, grid in PARAM_GRID.items():
+        now = current.get(param, BASELINE.get(param))
+        # Dichtstbijzijnde roosterwaarde als startpunt, ook als `now` er niet in staat
+        idx = min(range(len(grid)), key=lambda i: abs(grid[i] - now))
+        for step in (-1, 1):
+            j = idx + step
+            if 0 <= j < len(grid) and grid[j] != now:
+                variants.append({"param": param, "value": grid[j]})
+    return variants
 
 PARAM_NL = {
-    "sl_atr_mult": "SL-afstand (×ATR)",
-    "min_rr":      "Minimale R:R (TP3)",
+    "sl_atr_mult":      "SL-afstand (×ATR)",
+    "min_rr":           "Minimale R:R (TP3)",
+    "min_score_global": "Min. context score",
 }
 
 FACTOR_NL = {
@@ -136,6 +156,7 @@ def _bt_config(days: int, test_pct: float, overrides: dict) -> BacktestConfig:
         trade_mode="daytrade",
         sl_atr_mult=overrides.get("sl_atr_mult"),
         min_rr=overrides.get("min_rr"),
+        min_score=overrides.get("min_score_global"),
     )
 
 
@@ -232,12 +253,15 @@ def run_autotune(exchange, days: int = 150, test_pct: float = 0.35) -> list[dict
         # Huidige (geleerde of default) instellingen vormen de baseline
         learned = get_learned_params()
         current = {
-            "sl_atr_mult": learned.get("sl_atr_mult", BASELINE["sl_atr_mult"]),
-            "min_rr":      learned.get("min_rr",      BASELINE["min_rr"]),
+            "sl_atr_mult":      learned.get("sl_atr_mult",      BASELINE["sl_atr_mult"]),
+            "min_rr":           learned.get("min_rr",           BASELINE["min_rr"]),
+            "min_score_global": learned.get("min_score_global", BASELINE["min_score_global"]),
         }
 
-        total_steps = 1 + len(VARIANTS)
-        autotune_state.step = f"baseline: SL {current['sl_atr_mult']}×ATR, R:R {current['min_rr']}"
+        variants = _neighbour_variants(current)
+        total_steps = 1 + len(variants)
+        autotune_state.step = (f"baseline: SL {current['sl_atr_mult']}×ATR, "
+                               f"R:R {current['min_rr']}, score {current['min_score_global']}")
         base = _run_one(exchange, days, test_pct, current, "baseline")
         autotune_state.progress = 1 / total_steps
         if not base or base["total_trades"] < MIN_TRADES:
@@ -253,12 +277,12 @@ def run_autotune(exchange, days: int = 150, test_pct: float = 0.35) -> list[dict
                  "total_pnl": base["total_pnl"]}]
 
         best_variant, best_result = None, None
-        for i, v in enumerate(VARIANTS):
+        for i, v in enumerate(variants):
             if v["value"] == current.get(v["param"]):
                 autotune_state.progress = (i + 2) / total_steps
                 continue  # variant is al de huidige instelling
             overrides = {**current, v["param"]: v["value"]}
-            autotune_state.step = f"variant {i+1}/{len(VARIANTS)}: {v['param']}={v['value']}"
+            autotune_state.step = f"variant {i+1}/{len(variants)}: {v['param']}={v['value']}"
             r = _run_one(exchange, days, test_pct, overrides, autotune_state.step)
             autotune_state.progress = (i + 2) / total_steps
             if not r:

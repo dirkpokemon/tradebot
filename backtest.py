@@ -41,6 +41,7 @@ class BacktestConfig:
     trade_mode: str = 'daytrade'   # 'daytrade' | 'scalp' | 'both' — welke timeframe-modus simuleren
     sl_atr_mult: Optional[float] = None  # override min SL-afstand (×ATR); None = strategie-default
     min_rr: Optional[float] = None       # override minimale R:R op TP3; None = strategie-default
+    min_score: Optional[float] = None    # override minimale context score; None = strategie-default
 
 @dataclass
 class BtTrade:
@@ -580,6 +581,7 @@ def _run_backtest(config: BacktestConfig, exchange) -> BacktestResult:
     tune_kwargs = {}
     if config.sl_atr_mult: tune_kwargs['sl_atr_mult'] = config.sl_atr_mult
     if config.min_rr:      tune_kwargs['min_rr']      = config.min_rr
+    if config.min_score:   tune_kwargs['min_score_override'] = config.min_score
 
     for i, candle in enumerate(test_candles):
         backtest_state.progress = 0.1 + 0.85 * (i / n_test)
