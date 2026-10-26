@@ -90,16 +90,24 @@ def get_status():
         "last_analysis": state.last_analysis,
     }
 
+def _launch_bot_thread() -> bool:
+    """Start de botlus in een achtergrondthread. Geeft False als hij al draaide."""
+    global bot_thread
+    if state.running:
+        return False
+    state.running = True
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
+    return True
+
+
 @app.post("/start")
 def start_bot(config: BotConfig):
-    global bot_thread
     if state.running:
         raise HTTPException(status_code=400, detail="Bot is already running")
     state.symbol = config.symbol
     state.risk_per_trade = config.risk_per_trade
-    state.running = True
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
+    _launch_bot_thread()
     return {"message": "Bot started", "config": config}
 
 @app.post("/stop")
@@ -369,6 +377,27 @@ def get_monte_carlo():
         "error":    monte_carlo_state.error,
         "result":   monte_carlo_state.result,
     }
+
+
+@app.on_event("startup")
+async def auto_start_bot():
+    """
+    Start de bot zodra de service draait.
+
+    Zonder dit legt elke deploy de handel stil tot iemand handmatig op Start klikt —
+    en dat merk je pas als je toevallig naar het dashboard kijkt. Zet AUTO_START=false
+    om dit uit te zetten, bijvoorbeeld als je in live-modus bewust zelf wilt beginnen.
+    """
+    import logging
+    log = logging.getLogger(__name__)
+    if os.environ.get('AUTO_START', 'true').strip().lower() in ('false', '0', 'no', 'off'):
+        log.info("Auto-start staat uit (AUTO_START) — bot wacht op handmatige start")
+        return
+    if _launch_bot_thread():
+        log.info(
+            f"Bot automatisch gestart | {state.symbol} | "
+            f"{'SIM' if state.sim_mode else 'LIVE'} | risico {state.risk_per_trade * 100:.2f}% per trade"
+        )
 
 
 @app.on_event("startup")
