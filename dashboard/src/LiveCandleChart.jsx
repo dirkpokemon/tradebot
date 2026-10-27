@@ -1,17 +1,20 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { createChart, CandlestickSeries, createSeriesMarkers } from "lightweight-charts";
+import { C } from "./theme";
 
 const API_URL = import.meta.env.VITE_API_URL || "";
 
 const TIMEFRAMES = ["5m", "15m", "1h", "4h"];
 
+// De grafiek deelt het palet met de rest van het dashboard; lightweight-charts
+// tekent op canvas en kan daardoor niets uit de CSS overnemen.
 const THEME = {
-  bg:      "#ffffff",
-  text:    "#8b92a5",
-  grid:    "#f0f2f7",
-  border:  "#e2e5ef",
-  green:   "#00b37e",
-  red:     "#e63946",
+  bg:      C.card,
+  text:    C.muted,
+  grid:    C.border,
+  border:  C.border,
+  green:   C.green,
+  red:     C.red,
 };
 
 export default function LiveCandleChart({ trades = [] }) {
@@ -153,7 +156,7 @@ export default function LiveCandleChart({ trades = [] }) {
               axisLabelVisible: true, title,
             }));
           };
-          addLine(t.entry_price, "#3b5bdb", "entry", 0);
+          addLine(t.entry_price, C.blue, "entry", 0);
           addLine(t.stop_loss,   THEME.red,  "SL");
           addLine(t.tp1, THEME.green, "TP1");
           addLine(t.tp2, THEME.green, "TP2");
@@ -172,15 +175,15 @@ export default function LiveCandleChart({ trades = [] }) {
   }, [fetchAndDraw]);
 
   return (
-    <div style={{ background: "#fff", borderRadius: 14, padding: 20, boxShadow: "0 1px 4px rgba(30,40,80,0.07)" }}>
+    <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18 }}>
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
         <div>
-          <div style={{ fontSize: 10, letterSpacing: 1.5, color: "#8b92a5", textTransform: "uppercase", fontWeight: 600 }}>
+          <div style={{ fontSize: 10, letterSpacing: 1.5, color: C.muted, textTransform: "uppercase", fontWeight: 700 }}>
             Live Grafiek
           </div>
           {lastUpdate && (
-            <div style={{ fontSize: 9, color: "#c5c9d6", marginTop: 2 }}>
+            <div style={{ fontSize: 9, color: C.dim, marginTop: 2 }}>
               Bijgewerkt {lastUpdate} · vernieuwt elke 15s
             </div>
           )}
@@ -196,9 +199,9 @@ export default function LiveCandleChart({ trades = [] }) {
                 padding: "4px 10px", borderRadius: 6, border: "1px solid",
                 fontSize: 10, fontWeight: 700, cursor: "pointer",
                 fontFamily: "inherit", letterSpacing: 0.5,
-                background:   tf === timeframe ? "#3b5bdb" : "#f0f2f7",
-                color:        tf === timeframe ? "#ffffff"  : "#8b92a5",
-                borderColor:  tf === timeframe ? "#3b5bdb"  : "#e2e5ef",
+                background:   tf === timeframe ? C.blue   : C.card2,
+                color:        tf === timeframe ? "#ffffff" : C.muted,
+                borderColor:  tf === timeframe ? C.blue    : C.border,
               }}
             >
               {tf.toUpperCase()}
@@ -214,8 +217,8 @@ export default function LiveCandleChart({ trades = [] }) {
           <div style={{
             position: "absolute", inset: 0, display: "flex",
             alignItems: "center", justifyContent: "center",
-            background: "rgba(255,255,255,0.7)", borderRadius: 8,
-            fontSize: 11, color: "#8b92a5",
+            background: "rgba(18,19,25,0.75)", borderRadius: 8,
+            fontSize: 11, color: C.muted,
           }}>
             Candles laden…
           </div>
@@ -224,8 +227,8 @@ export default function LiveCandleChart({ trades = [] }) {
           <div style={{
             position: "absolute", inset: 0, display: "flex",
             alignItems: "center", justifyContent: "center",
-            background: "rgba(255,255,255,0.9)", borderRadius: 8,
-            fontSize: 11, color: "#e63946", fontWeight: 600,
+            background: "rgba(18,19,25,0.9)", borderRadius: 8,
+            fontSize: 11, color: C.red, fontWeight: 600,
           }}>
             ⚠ {error}
           </div>
@@ -234,9 +237,9 @@ export default function LiveCandleChart({ trades = [] }) {
 
       {/* Legend */}
       {trades.some(t => t.entry_price) && (
-        <div style={{ display: "flex", gap: 16, marginTop: 10, fontSize: 10, color: "#8b92a5" }}>
-          <span style={{ color: "#00b37e", fontWeight: 600 }}>▲ Long entry</span>
-          <span style={{ color: "#e63946", fontWeight: 600 }}>▼ Short entry</span>
+        <div style={{ display: "flex", gap: 16, marginTop: 10, fontSize: 10, color: C.muted }}>
+          <span style={{ color: C.green, fontWeight: 600 }}>▲ Long entry</span>
+          <span style={{ color: C.red, fontWeight: 600 }}>▼ Short entry</span>
         </div>
       )}
     </div>

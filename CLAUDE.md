@@ -137,16 +137,24 @@ Thin FastAPI wrapper around `state` and `run_bot`. The bot runs in a `daemon=Tru
 
 **Telegram webhook registration:** On startup, if `TELEGRAM_BOT_TOKEN` and `RAILWAY_URL` are both set, the app automatically calls the Telegram API to register the webhook URL.
 
-### dashboard/src/App.jsx — React monitoring UI
-Single-file React SPA. Reads `VITE_API_URL` at build time (defaults to `http://localhost:8000`). Polls `/status` every 5 seconds.
+### dashboard/ — React monitoring UI
+Reads `VITE_API_URL` at build time (defaults to `http://localhost:8000`). Polls `/status` and `/stats` every 5 seconds.
 
-**Key UI components:**
-- `ActiveTradeCard` — shows open trade with context score bar
-- `PendingApprovalPanel` — shows pending signals with context score bar and 10-min countdown
-- `TradeReviewModal` — label a closed trade (✅ Good / ⚠️ Marginal / ❌ Bad) with optional note
-- `TradeReviewPanel` — shows reviewed trades with labels
-- `CandleChart` — SVG candlestick chart using stored candle snapshot
-- Header badges: DAYTRADE/SCALP mode tag, HUMAN APPROVAL tag (yellow, only shown when active)
+**Files:**
+| File | Contains |
+|---|---|
+| `src/theme.js` | `C` (the single colour palette — **dark**) and `MONO` (the numeric font). Nothing anywhere should hardcode a hex; add a token instead. |
+| `src/metrics.js` | Derived figures: `tradeR`, `gradeOf`, `winRateOf`, `profitFactorOf`, `avgWinLossOf`, `byDay`, `cumulativeByDay`, `drawdownSeries`, `edgeScore`, `monthGrid`. All computed **client-side from `/status` + `/stats`** — deliberately no extra endpoints, so there is no second version of the truth. |
+| `src/Widgets.jsx` | Hand-rolled SVG: `ArcGauge`, `DonutRing`, `Sparkline`, `WinLossBars`, `EdgeRadar`, `ScoreMeter`, `CalendarHeatmap`, plus `Card` and `Kpi`. |
+| `src/App.jsx` | Layout, the five pages, and the panels. |
+| `src/LiveCandleChart.jsx` | lightweight-charts; it draws on canvas and so takes its colours from `C` in JS, not from CSS. |
+
+**Layout:** a left sidebar (`NAV`) with five pages, persisted in `localStorage` under `tradebot.page`:
+- **Dashboard** — active trade, 5 KPI tiles (net P&L, trade win %, profit factor, day win %, avg win/loss), edge-score radar, cumulative P&L, net P&L per day, recent trades, calendar heatmap, balance, drawdown, setup stats, "what is the bot doing".
+- **Journaal** — filters (side/setup/result/mode) over journal cards or a compact table, 25 at a time.
+- **Analyse** — live chart, backtest, Monte Carlo. **Leren** — auto-learning, active settings, proposals. **Bot** — config and setup health.
+
+**Edge score** (`edgeScore`) scores six properties on 0–100 and averages them. The scales are deliberately generous-topped ("100 = excellent", not "100 = achievable"), so a sound strategy lands around 60–80. The point is the *shape* of the hexagon — a dent names the weak spot — not the number.
 
 **SETUP_META:** rotation and continuation — the only two setups the strategy implements.
 
