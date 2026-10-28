@@ -1416,13 +1416,27 @@ const HIDDEN_PARAMS = new Set(["last_autotune"]);
 
 function AutoLearnPanel() {
   const [data, setData] = useState(null);
+  const [msg, setMsg] = useState(null);
+  const [stopping, setStopping] = useState(false);
+
+  const load = useCallback(() => fetch(`${API_URL}/learning/auto`)
+    .then(r => r.json()).then(setData).catch(() => {}), []);
 
   useEffect(() => {
-    const load = () => fetch(`${API_URL}/learning/auto`).then(r => r.json()).then(setData).catch(() => {});
     load();
     const t = setInterval(load, 30000);
     return () => clearInterval(t);
-  }, []);
+  }, [load]);
+
+  const stopExperiment = async () => {
+    setStopping(true);
+    try {
+      const res = await fetch(`${API_URL}/learning/experiment/cancel`, { method: "POST" });
+      setMsg((await res.json()).message);
+      await load();
+    } catch { setMsg("Stoppen mislukt"); }
+    setStopping(false);
+  };
 
   if (!data) return null;
 
@@ -1431,9 +1445,10 @@ function AutoLearnPanel() {
   const fmtVal = v => (v == null ? "—" : String(v));
 
   const STATUS = {
-    kept:     { label: "Behouden",      color: C.green, bg: C.greenBg },
-    reverted: { label: "Teruggedraaid", color: C.red,   bg: C.redBg   },
-    active:   { label: "Loopt",         color: C.blue,  bg: C.blueBg  },
+    kept:      { label: "Behouden",      color: C.green,  bg: C.greenBg  },
+    reverted:  { label: "Teruggedraaid", color: C.red,    bg: C.redBg    },
+    cancelled: { label: "Gestopt",       color: C.yellow, bg: C.yellowBg },
+    active:    { label: "Loopt",         color: C.blue,   bg: C.blueBg   },
   };
 
   return (
@@ -1455,6 +1470,13 @@ function AutoLearnPanel() {
         De bot past bewezen verbeteringen zelf toe — één tegelijk — en draait ze terug als ze niet helpen.
       </div>
 
+      {msg && (
+        <div style={{
+          fontSize: 11, color: C.blue, background: C.blueBg, borderRadius: 6,
+          padding: "8px 12px", marginBottom: 12, border: `1px solid ${C.blue}33`,
+        }}>{msg}</div>
+      )}
+
       {obs ? (
         <div style={{
           background: C.blueBg, border: `1px solid ${C.blue}44`, borderLeft: `3px solid ${C.blue}`,
@@ -1470,8 +1492,20 @@ function AutoLearnPanel() {
           <div style={{ background: C.border, borderRadius: 99, height: 6, overflow: "hidden" }}>
             <div style={{ width: `${pct}%`, height: "100%", background: C.blue, borderRadius: 99, transition: "width 0.4s" }} />
           </div>
-          <div style={{ fontSize: 10, color: C.muted, marginTop: 5 }}>
-            {obs.trades_done} van {obs.trades_needed} trades geobserveerd — daarna oordeelt hij zelf
+          <div style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            gap: 10, flexWrap: "wrap", marginTop: 5,
+          }}>
+            <span style={{ fontSize: 10, color: C.muted }}>
+              {obs.trades_done} van {obs.trades_needed} trades geobserveerd — daarna oordeelt hij zelf
+            </span>
+            {/* Zonder deze knop kon een zelf doorgevoerde wijziging alleen door de
+                observatieperiode uitgezeten worden, tot 60 dagen lang. */}
+            <button onClick={stopExperiment} disabled={stopping} className="btn-chip" style={{
+              background: "transparent", color: C.muted, border: `1px solid ${C.borderLt}`,
+            }}>
+              {stopping ? "Stoppen…" : "⏹ Stop en zet terug"}
+            </button>
           </div>
         </div>
       ) : (

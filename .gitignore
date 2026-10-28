@@ -25,3 +25,6 @@ node_modules/
 
 # Claude Code
 .claude/
+
+# Lokale SQLite-database (op Railway staat hij op /data)
+*.db

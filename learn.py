@@ -89,6 +89,52 @@ def _pf_str(pf):
     return "∞" if pf == float("inf") else f"{pf:.2f}"
 
 
+def _total_pnl(trades):
+    return sum((t.get("realized_pnl") or 0) for t in trades)
+
+
+# Een score-drempel verhogen is selectie: je houdt de beste trades over, dus de
+# winst PER TRADE gaat bijna altijd omhoog — ook als je er onderaan de streep
+# minder aan verdient. Daarom wordt een drempel beoordeeld op TOTALE winst, met
+# een ondergrens op het aantal trades dat overblijft. Dezelfde les als in
+# autotune.py: optimaliseer op geld, nooit op een verhouding per trade.
+MIN_KEEP_RATIO  = 0.75   # minstens dit deel van de trades moet overblijven
+MIN_TOTAL_GAIN  = 1.10   # en de totale winst moet er merkbaar op vooruitgaan
+
+
+def _better_threshold(trades, min_sample, floor=50, top=86):
+    """
+    Zoek de score-drempel die de meeste winst oplevert, of None als geen enkele
+    drempel het haalt. Geeft (drempel, trades_erboven) terug.
+    """
+    base_total = _total_pnl(trades)
+    # De lat ligt een tiende van de huidige omvang hóger. Een percentage van het
+    # totaal zou bij een negatief totaal de lat juist verlagen (-100 × 1,10 = -110),
+    # waardoor elke drempel "beter" lijkt zolang je maar verlies maakt.
+    bar = base_total + max(abs(base_total) * (MIN_TOTAL_GAIN - 1), 1.0)
+    best_threshold, best_total = None, bar
+
+    for threshold in range(floor + 5, top, 5):
+        above = [t for t in trades if (t.get("context_score") or 0) >= threshold]
+        below = [t for t in trades if (t.get("context_score") or 0) < threshold]
+        if len(above) < min_sample or len(below) < 4:
+            continue
+        # Houdt genoeg handel over?
+        if len(above) < MIN_KEEP_RATIO * len(trades):
+            continue
+        # Levert het echt meer geld op, en kost het weggefilterde deel ook echt geld?
+        total_above = _total_pnl(above)
+        if _total_pnl(below) >= 0:
+            continue
+        if total_above <= best_total:
+            continue
+        best_threshold, best_total = threshold, total_above
+
+    if best_threshold is None:
+        return None
+    return best_threshold, [t for t in trades if (t.get("context_score") or 0) >= best_threshold]
+
+
 def _analyze_direction(trades, min_side=10):
     """
     Stel een richtingfilter voor ALLEEN als één kant daadwerkelijk geld verliest
@@ -167,31 +213,18 @@ def _analyze_trade_mode(trades, min_mode=10):
 
 def _analyze_global_threshold(trades, min_sample=10):
     """
-    Zoek de min_score-drempel die de EXPECTANCY (gem. PnL per trade) maximaliseert.
-    Alleen voorstellen als de eruit gefilterde trades samen geld verliezen — dan snijdt
-    het echt verlies weg. Win rate is bewust niet de maatstaf.
+    Zoek de min_score-drempel die de meeste GELD oplevert — niet de meeste winst
+    per trade. Alleen voorstellen als het weggefilterde deel echt verlies maakt
+    én er genoeg handel overblijft. Win rate is bewust niet de maatstaf.
     """
     overall_avg = _avg_pnl(trades)
     current_threshold = 50
 
-    best_threshold = current_threshold
-    best_avg = overall_avg
-
-    for threshold in range(55, 86, 5):
-        above = [t for t in trades if (t.get("context_score") or 0) >= threshold]
-        below = [t for t in trades if (t.get("context_score") or 0) < threshold]
-        if len(above) < min_sample or len(below) < 5:
-            continue
-        # Verbetering alleen tellen als het weggefilterde deel netto verliest
-        if _avg_pnl(above) > best_avg and _avg_pnl(below) < 0:
-            best_avg = _avg_pnl(above)
-            best_threshold = threshold
-
-    if best_threshold <= current_threshold:
+    found = _better_threshold(trades, min_sample, floor=current_threshold)
+    if not found:
         return None
-
+    best_threshold, above = found
     below = [t for t in trades if (t.get("context_score") or 0) < best_threshold]
-    above = [t for t in trades if (t.get("context_score") or 0) >= best_threshold]
 
     return {
         "id": str(uuid.uuid4()),
@@ -205,7 +238,8 @@ def _analyze_global_threshold(trades, min_sample=10):
             f"per trade (PF {_pf_str(_profit_factor(below))}, {len(below)} trades). "
             f"Trades met score ≥ {best_threshold} verdienen ${_avg_pnl(above):+.0f}/trade "
             f"(PF {_pf_str(_profit_factor(above))}, {len(above)} trades). "
-            f"De drempel verhogen tilt de expectancy van ${overall_avg:+.0f} naar ${_avg_pnl(above):+.0f} per trade."
+            f"Totaal over dezelfde periode: ${_total_pnl(above):+.0f} tegen ${_total_pnl(trades):+.0f} nu, "
+            f"met {len(above)} van de {len(trades)} trades behouden."
         ),
         "win_rate_before": round(_win_rate(trades), 3),
         "win_rate_after": round(_win_rate(above), 3),
@@ -258,29 +292,22 @@ def _analyze_setup_disable(trades, setup_type, min_trades=12):
 
 
 def _analyze_setup_threshold(trades, setup_type, min_sample=8):
-    """Zoek een hogere min_score voor één setup als laag-scorende trades geld verliezen."""
+    """
+    Zoek een hogere min_score voor één setup als laag-scorende trades geld kosten.
+
+    Ook hier telt de totale opbrengst, niet de opbrengst per trade: met maar twee
+    setups legt een te strenge drempel op één ervan de halve bot stil.
+    """
     setup_trades = [t for t in trades if t.get("setup_type") == setup_type]
     if len(setup_trades) < min_sample * 2:
         return None
 
     overall_avg = _avg_pnl(setup_trades)
-    best_threshold = 50
-    best_avg = overall_avg
-
-    for threshold in range(55, 86, 5):
-        above = [t for t in setup_trades if (t.get("context_score") or 0) >= threshold]
-        below = [t for t in setup_trades if (t.get("context_score") or 0) < threshold]
-        if len(above) < min_sample or len(below) < 4:
-            continue
-        if _avg_pnl(above) > best_avg and _avg_pnl(below) < 0:
-            best_avg = _avg_pnl(above)
-            best_threshold = threshold
-
-    if best_threshold <= 50:
+    found = _better_threshold(setup_trades, min_sample, floor=50)
+    if not found:
         return None
-
-    above = [t for t in setup_trades if (t.get("context_score") or 0) >= best_threshold]
-    name  = SETUP_NL.get(setup_type, setup_type)
+    best_threshold, above = found
+    name = SETUP_NL.get(setup_type, setup_type)
 
     return {
         "id": str(uuid.uuid4()),
@@ -290,9 +317,11 @@ def _analyze_setup_threshold(trades, setup_type, min_sample=8):
         "current_value": 50,
         "proposed_value": best_threshold,
         "reasoning": (
-            f"{name} verdient significant meer bij score ≥ {best_threshold}: "
-            f"${_avg_pnl(above):+.0f}/trade (PF {_pf_str(_profit_factor(above))}, {len(above)} trades) "
-            f"vs ${overall_avg:+.0f}/trade overall ({len(setup_trades)} trades)."
+            f"{name} levert meer op bij score ≥ {best_threshold}: totaal "
+            f"${_total_pnl(above):+.0f} tegen ${_total_pnl(setup_trades):+.0f} nu, met "
+            f"{len(above)} van de {len(setup_trades)} trades behouden "
+            f"(${_avg_pnl(above):+.0f} vs ${overall_avg:+.0f} per trade, "
+            f"PF {_pf_str(_profit_factor(above))})."
         ),
         "win_rate_before": round(_win_rate(setup_trades), 3),
         "win_rate_after": round(_win_rate(above), 3),

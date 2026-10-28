@@ -17,7 +17,8 @@ from db import (clear_trades as db_clear_trades, get_trade_candles, save_review,
                 clear_rejected_proposals)
 from learn import analyze_for_proposals
 from autotune import run_autotune, autotune_state, autotune_stuck
-from autolearn import maybe_auto_apply, evaluate_active_experiment, learning_status
+from autolearn import (maybe_auto_apply, evaluate_active_experiment, learning_status,
+                       cancel_active_experiment)
 from backtest import (
     BacktestConfig, backtest_state, run_backtest,
     monte_carlo_state, run_monte_carlo,
@@ -601,6 +602,19 @@ def reject_proposal(proposal_id: str):
 def get_auto_learning():
     """Staat van het automatisch leren: loopt er een experiment, en wat ging eraan vooraf."""
     return learning_status()
+
+
+@app.post("/learning/experiment/cancel")
+def cancel_experiment():
+    """Zet een zelf doorgevoerde wijziging nu terug, zonder de observatieperiode af te wachten."""
+    result = cancel_active_experiment("handmatig gestopt via dashboard")
+    if not result:
+        return {"message": "Er loopt geen experiment"}
+    return {
+        "message": (f"{result['param_nl']} teruggezet van {result['new_value']} "
+                    f"naar {result['old_value']}"),
+        **result,
+    }
 
 
 @app.get("/learning/params")

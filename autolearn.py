@@ -37,7 +37,9 @@ AUTO_PARAMS = {
 # aangeduid als "setup_min_scores.<setup>", zodat één experiment-record ook een
 # geneste waarde kan beschrijven zonder extra kolommen in de database.
 SETUP_SCORE_PREFIX = "setup_min_scores."
-SETUP_SCORE_BOUNDS = (40, 75)
+# Niet strenger dan de globale score-band: er zijn maar twee setups, dus een
+# drempel die er één bijna stillegt halveert de handel.
+SETUP_SCORE_BOUNDS = (40, 70)
 
 PARAM_NL = {
     "sl_atr_mult":      "SL-afstand (×ATR)",
@@ -327,6 +329,37 @@ def evaluate_active_experiment() -> Optional[dict]:
     )
     return {"status": "kept", "param": param, "n": n,
             "baseline": baseline, "result": result}
+
+
+def cancel_active_experiment(reason: str = "handmatig gestopt") -> Optional[dict]:
+    """
+    Stop het lopende experiment en zet de parameter terug.
+
+    Zonder dit kon een zelf doorgevoerde wijziging alleen door de observatieperiode
+    uitgezeten worden — tot 60 dagen, en bij een wijziging die de handel afremt
+    duurt dat juist nog langer omdat de trades niet binnenkomen.
+    Het advies gaat NIET op de afwijs-lijst: stoppen is iets anders dan bewijzen
+    dat het niet werkt.
+    """
+    from db import get_active_experiment, close_experiment, closed_trades_for_learning
+
+    exp = get_active_experiment()
+    if not exp:
+        return None
+
+    param, old_value, new_value = exp["param"], exp["old_value"], exp["new_value"]
+    trades = closed_trades_for_learning(since=exp["applied_at"])
+    _write_param(param, old_value)
+    close_experiment(exp["id"], "cancelled", len(trades),
+                     round(_expectancy(trades), 2), reason)
+
+    logger.info(f"Experiment {param} gestopt: {new_value} → {old_value} ({reason})")
+    _notify(
+        f"⏹️ <b>EXPERIMENT GESTOPT</b>\n"
+        f"{param_label(param)}: <b>{new_value} → {old_value}</b>\n\n{reason}"
+    )
+    return {"status": "cancelled", "param": param, "param_nl": param_label(param),
+            "old_value": old_value, "new_value": new_value, "n": len(trades)}
 
 
 def learning_status() -> dict:
