@@ -1712,6 +1712,7 @@ function LearningPanel() {
 
   const pending    = data?.proposals?.filter(p => p.status === "pending") ?? [];
   const decided    = data?.proposals?.filter(p => p.status !== "pending") ?? [];
+  const insights   = data?.insights ?? [];
   const suppressed = data?.suppressed ?? 0;
 
   const typeLabel = {
@@ -1879,6 +1880,34 @@ function LearningPanel() {
           </div>
           {pending.map(p => <ProposalCard key={p.id} p={p} />)}
         </>
+      )}
+
+      {/* Inzichten: wel nuttig om te lezen, maar er valt niets te beslissen.
+          Daarom geen knoppen en geen plek tussen de openstaande voorstellen. */}
+      {insights.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <div style={{
+            fontSize: 10, fontWeight: 700, color: C.dim, textTransform: "uppercase",
+            letterSpacing: 0.8, marginBottom: 8,
+          }}>
+            💡 Inzichten — alleen ter informatie
+          </div>
+          {insights.map(p => (
+            <div key={p.id} style={{
+              background: C.card2, border: `1px solid ${C.border}`,
+              borderLeft: `3px solid ${C.purple}`, borderRadius: 10,
+              padding: "12px 14px", marginBottom: 8,
+            }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: C.text, marginBottom: 4 }}>
+                {p.description}
+              </div>
+              <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.55 }}>{p.reasoning}</div>
+              <div style={{ fontSize: 9.5, color: C.dim, marginTop: 6 }}>
+                {p.sample_size} trades · {(p.created_at || "").slice(0, 10)}
+              </div>
+            </div>
+          ))}
+        </div>
       )}
 
       {decided.length > 0 && (

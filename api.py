@@ -506,9 +506,13 @@ def get_learning_stats():
 
 @app.get("/learning/proposals")
 def get_proposals():
-    proposals = get_learning_proposals()
+    all_proposals = get_learning_proposals()
+    # Inzichten veranderen geen instelling en horen dus niet tussen de beslissingen.
+    insights  = [p for p in all_proposals if p["status"] == "info"]
+    proposals = [p for p in all_proposals if p["status"] != "info"]
     return {
         "proposals": proposals,
+        "insights": insights,
         "pending": sum(1 for p in proposals if p["status"] == "pending"),
         # Adviezen die je eerder afwees en daarom niet opnieuw worden voorgesteld
         "suppressed": count_suppressed_proposals(),

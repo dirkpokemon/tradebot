@@ -223,13 +223,15 @@ def _analyze_factors(baseline_trades: list) -> Optional[dict]:
         "reasoning": (
             f"Analyse over {len(with_bd)} backtest-trades ({len(winners)} winnaars, {len(losers)} verliezers). "
             + " · ".join(lines)
-            + ". Trades waar deze factoren scoren winnen structureel vaker — weeg ze mee in je "
-              "beoordeling van signalen. (Informatief: accepteren wijzigt geen parameters.)"
+            + ". Trades waar deze factoren scoren winnen structureel vaker."
         ),
         "win_rate_before": None,
         "win_rate_after": None,
         "sample_size": len(with_bd),
-        "status": "pending",
+        # 'info', niet 'pending': dit verandert geen enkele instelling, dus het
+        # hoort niet als beslissing in je lijst te staan. Het dashboard toont het
+        # apart als inzicht.
+        "status": "info",
         "created_at": datetime.utcnow().isoformat(),
         "decided_at": None,
     }

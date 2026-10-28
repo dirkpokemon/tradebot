@@ -151,6 +151,14 @@ def init_db():
                 c.execute(sql)
             except Exception:
                 pass  # column already exists
+        # Factor-inzichten zijn puur informatief en werden eerder als 'pending'
+        # bewaard, waardoor ze in het dashboard om een beslissing vroegen die
+        # niets zou veranderen. Bestaande rijen eenmalig omzetten.
+        try:
+            c.execute("UPDATE learning_proposals SET status='info' "
+                      "WHERE type='factor_insight' AND status='pending'")
+        except Exception:
+            pass
     logger.info(f"Database geïnitialiseerd: {DB_PATH}")
 
 def save_trade(t: dict):
@@ -396,9 +404,12 @@ def save_learning_proposals(proposals: list[dict]) -> int:
             signature = proposal_signature(p["type"], p.get("setup_type"), p["proposed_value"])
             if signature in rejected:
                 continue
-            # Remove old pending proposal of same type+setup
+            # Vervang het vorige, nog onbesliste advies van dezelfde soort. Ook
+            # 'info' (puur informatieve inzichten) hoort hierbij, anders stapelen
+            # die zich bij elke ronde op.
             c.execute(
-                "DELETE FROM learning_proposals WHERE type=? AND (setup_type=? OR (setup_type IS NULL AND ? IS NULL)) AND status='pending'",
+                "DELETE FROM learning_proposals WHERE type=? AND "
+                "(setup_type=? OR (setup_type IS NULL AND ? IS NULL)) AND status IN ('pending','info')",
                 (p["type"], p.get("setup_type"), p.get("setup_type"))
             )
             saved += 1
