@@ -98,21 +98,48 @@ def _get_learned_analyze_kwargs() -> dict:
         return {"disabled_setups": state.disabled_setups}
 
 
+LEARN_EVERY_N_TRADES = 10
+
+
 def _maybe_run_learning():
-    """Trigger learning analysis after every 10 new closed trades (min 30 total)."""
+    """
+    Laat het leerrapport draaien zodra er 10 nieuwe gesloten trades bij zijn
+    (vanaf 30 in totaal), en laat de bot getalsmatige adviezen meteen zelf
+    toepassen.
+
+    De teller wordt in de database bijgehouden, niet afgeleid uit `count % 10`:
+    deze functie draait per candle, dus met een modulo-test zou hij bij een stand
+    van precies 40 trades élke candle opnieuw analyseren. Opslaan betekent ook dat
+    een redeploy de analyse niet nog een keer overdoet.
+    """
     try:
         closed_count = sum(1 for t in state.trades if t.status == "closed")
-        if closed_count < 30 or closed_count % 10 != 0:
+        if closed_count < 30:
             return
+        last = get_learned_params().get("last_learn_trades") or 0
+        if closed_count - int(last) < LEARN_EVERY_N_TRADES:
+            return
+
         from learn import analyze_for_proposals
+        from autolearn import maybe_auto_apply
+        set_learned_param("last_learn_trades", closed_count)
+
         proposals = analyze_for_proposals(min_trades=30)
-        if proposals:
-            saved = save_learning_proposals(proposals)
-            skipped = len(proposals) - saved
-            logger.info(
-                f"Leeranalyse: {saved} nieuwe voorstellen opgeslagen"
-                + (f" ({skipped} eerder afgewezen, overgeslagen)" if skipped else "")
-            )
+        if not proposals:
+            logger.info(f"Leeranalyse over {closed_count} trades: geen verbeterpunten gevonden")
+            return
+
+        saved = save_learning_proposals(proposals)
+        skipped = len(proposals) - saved
+        logger.info(
+            f"Leeranalyse over {closed_count} trades: {saved} nieuwe voorstellen"
+            + (f" ({skipped} eerder afgewezen, overgeslagen)" if skipped else "")
+        )
+        # Getalsmatige adviezen binnen vaste grenzen voert de bot zelf door, via
+        # dezelfde nulmeting-en-terugdraai-machinerie als de autotune. Structurele
+        # adviezen (setup uitschakelen, richtingfilter, handelsmodus) blijven
+        # bewust op een menselijke beslissing wachten.
+        maybe_auto_apply(proposals)
     except Exception as e:
         logger.warning(f"Leeranalyse mislukt: {e}")
 
@@ -809,6 +836,10 @@ def run_bot():
                     else None  # manage_open_trades valt terug op candles_15m[-1][4]
                 )
                 manage_open_trades(exchange, candles_15m, curr_price=mgmt_price)
+
+                # Net nadat trades gesloten kunnen zijn: is er genoeg nieuwe
+                # ervaring voor een leerronde? De functie bewaakt zelf hoe vaak.
+                _maybe_run_learning()
 
                 open_count = sum(1 for t in state.trades if t.status != "closed")
                 signal         = None

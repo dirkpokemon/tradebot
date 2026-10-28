@@ -677,6 +677,17 @@ def get_autotune_status():
     }
 
 
+def _due(key: str, days: int) -> bool:
+    """Is deze periodieke taak weer aan de beurt?"""
+    last = get_learned_params().get(key)
+    if not last:
+        return True
+    try:
+        return (datetime.utcnow() - datetime.fromisoformat(last)).days >= days
+    except ValueError:
+        return True
+
+
 def _monthly_autotune_loop():
     """Draait autotune automatisch als de laatste run ≥30 dagen geleden is (check elk uur)."""
     import logging
@@ -691,15 +702,7 @@ def _monthly_autotune_loop():
                 log.warning(f"Beoordelen van leerexperiment mislukt: {e}")
 
             if (not autotune_state.running or autotune_stuck()) and not backtest_state.running:
-                last = get_learned_params().get("last_autotune")
-                due = True
-                if last:
-                    try:
-                        last_dt = datetime.fromisoformat(last)
-                        due = (datetime.utcnow() - last_dt).days >= 30
-                    except ValueError:
-                        due = True
-                if due:
+                if _due("last_autotune", 30):
                     log.info("Maandelijkse autotune gestart (laatste run ≥30 dagen geleden)")
                     _run_autotune_thread()
         except Exception as e:

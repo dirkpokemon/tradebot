@@ -317,6 +317,28 @@ def save_signal_review(signal_id: str, setup_type: str, side: str, approved: boo
         ))
 
 
+def _norm_value(value):
+    """
+    Normaliseer een voorgestelde waarde voor vergelijking.
+
+    Getallen worden als getal vergeleken, niet als tekst. Zonder dit golden 68 en
+    68.0 als verschillende adviezen: de bot slaat een teruggedraaide wijziging op
+    met de omgerekende float, terwijl het oorspronkelijke voorstel een int bevatte,
+    waardoor precies dat advies tóch weer langskwam.
+    """
+    import json
+    if isinstance(value, bool):
+        return ("b", value)
+    if isinstance(value, (int, float)):
+        return ("n", float(value))
+    return ("s", json.dumps(value, sort_keys=True))
+
+
+def proposal_signature(ptype: str, setup_type, proposed_value) -> tuple:
+    """De identiteit van een advies: soort + setup + voorgestelde waarde."""
+    return (ptype, setup_type, _norm_value(proposed_value))
+
+
 def get_rejected_signatures() -> set:
     """
     Handtekeningen van eerder afgewezen voorstellen: (type, setup_type, proposed_value).
@@ -331,7 +353,14 @@ def get_rejected_signatures() -> set:
             rows = c.execute(
                 "SELECT type, setup_type, proposed_value FROM learning_proposals WHERE status='rejected'"
             ).fetchall()
-        return {(r[0], r[1], r[2]) for r in rows}
+        out = set()
+        for r in rows:
+            try:
+                value = json.loads(r[2]) if r[2] is not None else None
+            except (ValueError, TypeError):
+                value = r[2]
+            out.add(proposal_signature(r[0], r[1], value))
+        return out
     except Exception:
         return set()
 
@@ -364,7 +393,7 @@ def save_learning_proposals(proposals: list[dict]) -> int:
     saved = 0
     with _conn() as c:
         for p in proposals:
-            signature = (p["type"], p.get("setup_type"), json.dumps(p["proposed_value"]))
+            signature = proposal_signature(p["type"], p.get("setup_type"), p["proposed_value"])
             if signature in rejected:
                 continue
             # Remove old pending proposal of same type+setup
