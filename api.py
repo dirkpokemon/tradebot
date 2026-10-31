@@ -602,6 +602,46 @@ def reject_proposal(proposal_id: str):
     return {"message": f"Afgewezen: {p['description']}"}
 
 
+@app.post("/notify/test")
+def test_notification():
+    """
+    Stuur nu een testmelding naar alle ingestelde kanalen.
+
+    Synchroon en met de échte foutmelding erin: anders stel je vijf SMTP-variabelen
+    in en moet je op een trade wachten om te ontdekken dat er een typefout in zat.
+    """
+    from bot import send_telegram, _send_email_now
+    message = (
+        "🔔 <b>TESTMELDING</b>\n"
+        "Als je dit leest werken de meldingen.\n"
+        f"<i>Verstuurd op {datetime.utcnow().strftime('%d-%m-%Y %H:%M')} UTC.</i>"
+    )
+
+    channels, errors = [], []
+
+    if os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID"):
+        try:
+            send_telegram(message)
+            channels.append("Telegram")
+        except Exception as e:
+            errors.append(f"Telegram: {e}")
+
+    if os.environ.get("SMTP_HOST") and os.environ.get("MAIL_TO"):
+        try:
+            _send_email_now(message)
+            channels.append(f"e-mail ({os.environ['MAIL_TO']})")
+        except Exception as e:
+            errors.append(f"E-mail: {e}")
+
+    if not channels and not errors:
+        return {"ok": False, "message": (
+            "Geen enkel meldingskanaal ingesteld. Zet SMTP_HOST, SMTP_USER, "
+            "SMTP_PASSWORD en MAIL_TO in Railway voor e-mail.")}
+    if errors:
+        return {"ok": False, "message": " · ".join(errors), "sent": channels}
+    return {"ok": True, "message": f"Testmelding verstuurd naar {' en '.join(channels)}."}
+
+
 @app.get("/learning/auto")
 def get_auto_learning():
     """Staat van het automatisch leren: loopt er een experiment, en wat ging eraan vooraf."""

@@ -2,7 +2,9 @@ import ccxt
 import time
 import logging
 import os
+import re
 import requests
+import threading
 from datetime import datetime
 from typing import Optional
 from dataclasses import dataclass, field, asdict
@@ -169,6 +171,106 @@ def send_telegram(message: str):
         logger.warning(f"Telegram melding mislukt: {e}")
 
 
+def _strip_html(text: str) -> str:
+    """Berichten zijn in Telegram-HTML geschreven; dit is de leesbare platte versie."""
+    return re.sub(r"<[^>]+>", "", text)
+
+
+def _send_email_now(message: str):
+    """
+    Verstuur één melding per e-mail via SMTP.
+
+    Bewust smtplib uit de standaardbibliotheek en geen externe maildienst: het
+    werkt met elke provider (Gmail, je eigen domein, wat dan ook) en voegt geen
+    afhankelijkheid of account toe dat ook weer kan verlopen.
+    """
+    host = os.environ.get('SMTP_HOST', '')
+    to   = os.environ.get('MAIL_TO', '')
+    if not host or not to:
+        return
+
+    import smtplib, ssl
+    from email.message import EmailMessage
+
+    port     = int(os.environ.get('SMTP_PORT', '587'))
+    user     = os.environ.get('SMTP_USER', '')
+    password = os.environ.get('SMTP_PASSWORD', '')
+    sender   = os.environ.get('MAIL_FROM', user or to)
+
+    plain   = _strip_html(message)
+    # De eerste regel is in elk bericht de kop ("📈 TRADE OPEN [DAYTRADE]") en
+    # is daarmee precies wat je op je telefoon wilt zien zonder de mail te openen.
+    subject = plain.split("\n", 1)[0].strip()[:120] or "TradeBot"
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"]    = sender
+    msg["To"]      = to
+    msg.set_content(plain)
+    msg.add_alternative(
+        "<html><body style=\"font-family:-apple-system,Segoe UI,sans-serif;font-size:15px\">"
+        + message.replace("\n", "<br>")
+        + "</body></html>",
+        subtype="html",
+    )
+
+    # Versleuteling staat standaard aan: zonder TLS gaat het SMTP-wachtwoord
+    # leesbaar over de lijn. SMTP_TLS=false is er alleen voor een vertrouwde
+    # relay in hetzelfde netwerk.
+    use_tls = os.environ.get('SMTP_TLS', 'true').strip().lower() not in ('false', '0', 'no', 'off')
+
+    # Harde timeout: zonder dat kan een SMTP-server die niet antwoordt deze
+    # thread voorgoed laten hangen (zie CLAUDE.md over netwerkclients).
+    if port == 465:
+        server = smtplib.SMTP_SSL(host, port, timeout=15, context=ssl.create_default_context())
+    else:
+        server = smtplib.SMTP(host, port, timeout=15)
+
+    with server:
+        if port != 465 and use_tls:
+            server.ehlo()
+            if not server.has_extn("starttls"):
+                raise RuntimeError(
+                    f"{host}:{port} biedt geen STARTTLS. Gebruik poort 465, of zet "
+                    f"SMTP_TLS=false als dit een vertrouwde relay is — maar stuur dan "
+                    f"geen wachtwoord mee."
+                )
+            server.starttls(context=ssl.create_default_context())
+        if user and password:
+            if not use_tls and port != 465:
+                raise RuntimeError("Weiger in te loggen zonder TLS: zet SMTP_TLS=true of gebruik poort 465.")
+            server.login(user, password)
+        server.send_message(msg)
+
+
+def send_email(message: str):
+    """
+    Mail in een eigen thread. Een SMTP-sessie kost al snel een paar seconden en
+    de handelslus draait elke 10 seconden; die mag daar niet op staan wachten.
+    """
+    if not os.environ.get('SMTP_HOST') or not os.environ.get('MAIL_TO'):
+        return
+
+    def _run():
+        try:
+            _send_email_now(message)
+        except Exception as e:
+            logger.warning(f"E-mail melding mislukt: {e}")
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def notify(message: str):
+    """
+    Eén ingang voor alle meldingen; stuurt naar elk kanaal dat is ingesteld.
+
+    Telegram en e-mail staan los van elkaar: valt er één weg, dan blijven de
+    meldingen via het andere kanaal gewoon doorkomen.
+    """
+    send_telegram(message)
+    send_email(message)
+
+
 def get_public_exchange():
     """
     OKX publieke API voor marktdata — geen auth nodig.
@@ -255,7 +357,7 @@ def place_order(exchange, symbol: str, signal: Signal, qty: float, candles_15m: 
             f"[SIM] [{signal.setup_type.upper()}] {signal.side.upper()} {qty:.4f} {symbol} @ {signal.entry:.0f} | "
             f"SL={signal.stop_loss:.0f} | TP1={signal.tp1:.0f} | TP2={signal.tp2:.0f} | TP3={signal.tp3:.0f}"
         )
-        send_telegram(
+        notify(
             f"📈 <b>TRADE OPEN [{mode}]</b>\n"
             f"{signal.setup_type.upper()} {signal.side.upper()} {qty:.4f} {symbol}\n"
             f"Entry: {signal.entry:.0f} | SL: {signal.stop_loss:.0f}\n"
@@ -297,7 +399,7 @@ def place_order(exchange, symbol: str, signal: Signal, qty: float, candles_15m: 
                 f"[LIVE] [{signal.setup_type.upper()}] {signal.side.upper()} {qty} {symbol} @ {signal.entry:.0f} | "
                 f"SL={signal.stop_loss:.0f} | TP1={signal.tp1:.0f} | TP2={signal.tp2:.0f} | TP3={signal.tp3:.0f}"
             )
-            send_telegram(
+            notify(
                 f"📈 <b>TRADE OPEN [{mode}]</b>\n"
                 f"{signal.setup_type.upper()} {signal.side.upper()} {qty} {symbol}\n"
                 f"Entry: {signal.entry:.0f} | SL: {signal.stop_loss:.0f}\n"
@@ -504,7 +606,7 @@ def manage_open_trades(exchange, candles_15m, curr_price: float = None):
             _record_equity()
             state.consecutive_stops += 1
             state.sl_cooldown_candles = 1  # start cooldown (daytrade: 2 candles op 15m, scalp: 1 candle op 5m)
-            send_telegram(
+            notify(
                 f"❌ <b>SL HIT</b>\n"
                 f"{trade.setup_type.upper()} {trade.side.upper()} {trade.symbol}\n"
                 f"Entry: {trade.entry_price:.0f} → Exit: {sl_price:.0f}\n"
@@ -516,7 +618,7 @@ def manage_open_trades(exchange, candles_15m, curr_price: float = None):
                 state.circuit_breaker_until = time.time() + 86400  # 24 uur
                 resume = datetime.utcfromtimestamp(state.circuit_breaker_until).strftime('%Y-%m-%d %H:%M UTC')
                 logger.warning(f"Circuit breaker actief tot {resume}")
-                send_telegram(
+                notify(
                     f"🚨 <b>CIRCUIT BREAKER</b>\n"
                     f"5 stops op rij — bot gepauzeerd.\n"
                     f"Hervat om: {resume}"
@@ -533,7 +635,7 @@ def manage_open_trades(exchange, candles_15m, curr_price: float = None):
             update_trade(asdict(trade))
             _record_equity()
             state.consecutive_stops = 0
-            send_telegram(
+            notify(
                 f"✅ <b>TP1 GERAAKT</b> ({tp_fraction*100:.0f}%) — SL ongewijzigd\n"
                 f"{trade.setup_type.upper()} {trade.side.upper()} @ {curr_price:.0f}\n"
                 f"PnL tot nu: {trade.realized_pnl:+.2f} USDT"
@@ -556,7 +658,7 @@ def manage_open_trades(exchange, candles_15m, curr_price: float = None):
             _update_setup_health()
             _record_equity()
             state.consecutive_stops = 0
-            send_telegram(
+            notify(
                 f"✅ <b>TP2 GERAAKT — VOLLEDIGE EXIT</b> (counter-trend, max 1.5R)\n"
                 f"{trade.setup_type.upper()} {trade.side.upper()} {trade.symbol}\n"
                 f"Entry: {trade.entry_price:.0f} → Exit: {curr_price:.0f}\n"
@@ -575,7 +677,7 @@ def manage_open_trades(exchange, candles_15m, curr_price: float = None):
             _record_equity()
             state.consecutive_stops = 0
             logger.info(f"SL verschoven naar breakeven: {trade.entry_price:.0f}")
-            send_telegram(
+            notify(
                 f"✅ <b>TP2 GERAAKT</b>\n"
                 f"{trade.setup_type.upper()} {trade.side.upper()} @ {curr_price:.0f}\n"
                 f"PnL tot nu: {trade.realized_pnl:+.2f} USDT | SL → breakeven + swing PA"
@@ -590,7 +692,7 @@ def manage_open_trades(exchange, candles_15m, curr_price: float = None):
             update_trade(asdict(trade))
             _record_equity()
             state.consecutive_stops = 0
-            send_telegram(
+            notify(
                 f"✅ <b>TP3 GERAAKT</b>\n"
                 f"{trade.setup_type.upper()} {trade.side.upper()} @ {curr_price:.0f}\n"
                 f"PnL tot nu: {trade.realized_pnl:+.2f} USDT | Runner actief, SL trailend"
@@ -660,7 +762,7 @@ def _update_setup_health():
         if n >= MIN_TRADES_TO_JUDGE and wr < DISABLE_THRESHOLD and setup not in _degraded_warned:
             _degraded_warned.add(setup)
             logger.warning(f"Setup {setup} verslechtert: win rate {wr*100:.0f}% over {n} trades")
-            send_telegram(
+            notify(
                 f"⚠️ <b>SETUP VERSLECHTERT: {setup.upper()}</b>\n"
                 f"Win rate laatste {n} trades: {wr*100:.0f}% (drempel: {DISABLE_THRESHOLD*100:.0f}%)\n"
                 f"De setup blijft actief. Bekijk het leerrapport voor een eventueel voorstel."

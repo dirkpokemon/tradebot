@@ -1089,6 +1089,50 @@ function ConfigPanel({ config, setConfig, isRunning, loading, onStart, onStop })
   );
 }
 
+// ─── Meldingen ────────────────────────────────────────────────────────────────
+
+function NotificationPanel() {
+  const [result, setResult] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const test = async () => {
+    setBusy(true); setResult(null);
+    try {
+      const res = await fetch(`${API_URL}/notify/test`, { method: "POST" });
+      setResult(await res.json());
+    } catch {
+      setResult({ ok: false, message: "Kan de bot niet bereiken" });
+    }
+    setBusy(false);
+  };
+
+  return (
+    <Card title="Meldingen">
+      <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.55, marginBottom: 12 }}>
+        Je krijgt bericht bij elke entry, elke TP, de stop loss, het sluiten van een trade,
+        en bij elke aanpassing die de bot zelf doorvoert. Via Telegram, e-mail, of allebei —
+        wat in Railway is ingesteld.
+      </div>
+
+      <button onClick={test} disabled={busy} className="btn-primary">
+        {busy ? "Versturen…" : "🔔 Stuur een testmelding"}
+      </button>
+
+      {result && (
+        <div style={{
+          marginTop: 10, fontSize: 11, lineHeight: 1.5,
+          color: result.ok ? C.green : C.red,
+          background: result.ok ? C.greenBg : C.redBg,
+          border: `1px solid ${(result.ok ? C.green : C.red)}44`,
+          borderRadius: 8, padding: "9px 12px",
+        }}>
+          {result.ok ? "✓ " : "⚠ "}{result.message}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 // ─── Backtest Panel ───────────────────────────────────────────────────────────
 
 function MetricTile({ label, value, color, sub }) {
@@ -2322,14 +2366,19 @@ export default function Dashboard() {
 
         {/* ── Bot ────────────────────────────────────────────────────────────── */}
         {page === "bot" && (
-          <div className="grid-2">
-            <ConfigPanel
-              config={config} setConfig={setConfig}
-              isRunning={isRunning} loading={loading}
-              onStart={startBot} onStop={stopBot}
-            />
-            <SetupHealthPanel setupHealth={status?.setup_health} />
-          </div>
+          <>
+            <div className="grid-2">
+              <ConfigPanel
+                config={config} setConfig={setConfig}
+                isRunning={isRunning} loading={loading}
+                onStart={startBot} onStop={stopBot}
+              />
+              <SetupHealthPanel setupHealth={status?.setup_health} />
+            </div>
+            <div className="grid-2">
+              <NotificationPanel />
+            </div>
+          </>
         )}
 
         <div style={{ marginTop: 26, textAlign: "center", color: C.dim, fontSize: 9, letterSpacing: 1.4 }}>

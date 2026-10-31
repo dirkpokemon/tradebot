@@ -110,10 +110,10 @@ def _expectancy(trades: list) -> float:
 
 
 def _notify(message: str):
-    """Telegram-bericht; de bot beslist zelfstandig, dus je hoort wél wat hij doet."""
+    """Melding via Telegram en/of e-mail; de bot beslist zelfstandig, dus je hoort wél wat hij doet."""
     try:
-        from bot import send_telegram
-        send_telegram(message)
+        from bot import notify
+        notify(message)
     except Exception as e:
         logger.warning(f"Melding versturen mislukt: {e}")
 

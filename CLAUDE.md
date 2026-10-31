@@ -36,6 +36,12 @@ git commit -m "rebuild dashboard"
 | `SIM_BALANCE` | Starting capital for sim mode (default `10000`) |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token for trade alerts + approval keyboard |
 | `TELEGRAM_CHAT_ID` | Telegram chat ID for trade alerts |
+| `SMTP_HOST` | Mail server for e-mail alerts, e.g. `smtp.gmail.com`. Unset = no e-mail. |
+| `SMTP_PORT` | `587` (STARTTLS, default) or `465` (implicit TLS) |
+| `SMTP_USER` / `SMTP_PASSWORD` | Mailbox login. For Gmail this must be an **app password**, not the account password. |
+| `MAIL_TO` | Where alerts go. Unset = no e-mail. |
+| `MAIL_FROM` | Sender address; defaults to `SMTP_USER` |
+| `SMTP_TLS` | `true` (default). `false` only for a trusted relay — the code refuses to send a password over an unencrypted link. |
 | `HUMAN_APPROVAL` | `true` = wait for Telegram approve/skip before placing order |
 | `TRADE_MODE` | `daytrade` (default, triggers on 15m close) or `scalp` (triggers on 5m close, tighter TPs) |
 | `DB_PATH` | Path to SQLite DB, e.g. `/data/trades.db` for Railway volume persistence |
@@ -194,6 +200,10 @@ The JS bundle filename changes on every build (Vite content hash). If you forget
 **A backtest must not log per candle.** `analyze()` writes several INFO lines on every call, so a backtest over a few thousand candles emits thousands of lines per second. Railway caps a replica at 500 logs/sec and drops the rest — in one run ~12,000 messages vanished, including the backtest's own result lines, which made a perfectly healthy autotune look like it had hung. `run_backtest` now wraps the whole run in `_quiet_strategy_logging()`, which lifts the `strategy` logger to WARNING and restores it afterwards. Keep any new high-volume loop out of INFO.
 
 **A redeploy must not silently stop trading.** `state.running` lives in memory and only `POST /start` used to set it, so every deploy left the bot idle until someone noticed and clicked Start — once for half a day. `auto_start_bot()` now launches the loop on boot (disable with `AUTO_START=false`). Both it and `/start` go through `_launch_bot_thread()`, which refuses to start a second loop.
+
+**Notifications go through `bot.notify()`, never through one channel directly.** `notify()` fans out to Telegram and e-mail; each is independent, so losing one does not silence the bot. E-mail goes out on its own daemon thread — an SMTP session takes seconds and the trading loop ticks every 10 — and every network call has a hard timeout. TLS is on by default and `_send_email_now()` refuses to `login()` over an unencrypted link rather than leaking the password. `POST /notify/test` (button on the Bot page) sends synchronously and returns the real exception, because otherwise the only way to discover a typo in five SMTP variables is to wait days for a trade.
+
+**`HUMAN_APPROVAL` is dead.** The Telegram approve/skip flow was removed from `bot.py` and `api.py`; only the `pending_signals` table and the env var on Railway remain. Nothing reads it, so it cannot block trading — but the section below still documents the old flow. Treat that as history, not as behaviour.
 
 **A trigger that is never called is not a feature.** `bot.py:_maybe_run_learning()` existed, looked finished, and was referenced nowhere — so `learn.py` only ever ran when someone clicked "Analyseer nu" in the dashboard. The monthly autotune was the *only* automatic learning path, and every proposal `learn.py` produced sat waiting for a human forever. It is now called from the main loop right after `manage_open_trades()`. Grep for call sites before trusting that a scheduled-looking function runs.
 
