@@ -772,19 +772,35 @@ def _monthly_autotune_loop():
 
 _DIST = os.path.join(os.path.dirname(__file__), "dashboard", "dist")
 
+# Vite geeft elke bundel een inhoud-hash in de bestandsnaam, dus die mag voor
+# altijd gecached worden: verandert de inhoud, dan verandert de naam. index.html
+# houdt juist géén cache, want dáárin staat naar welke bundel verwezen wordt.
+# Zonder deze headers mag een browser zelf gokken hoe lang hij index.html bewaart
+# en blijft hij na een deploy de oude dashboardversie tonen — dat gebeurde: een
+# nieuwe knop was uitgerold maar niet te zien zonder harde refresh.
+_CACHE_IMMUTABLE = "public, max-age=31536000, immutable"
+_CACHE_REVALIDATE = "no-cache"
+
+
+def _index_response():
+    return FileResponse(
+        os.path.join(_DIST, "index.html"),
+        headers={"Cache-Control": _CACHE_REVALIDATE},
+    )
+
+
 @app.get("/", include_in_schema=False)
 async def spa_root():
-    index = os.path.join(_DIST, "index.html")
-    if not os.path.isfile(index):
+    if not os.path.isfile(os.path.join(_DIST, "index.html")):
         return {"status": "API online", "dashboard": "not built — run: npm --prefix dashboard run build"}
-    return FileResponse(index)
+    return _index_response()
 
 @app.get("/{full_path:path}", include_in_schema=False)
 async def spa_fallback(full_path: str):
-    index = os.path.join(_DIST, "index.html")
-    if not os.path.isfile(index):
+    if not os.path.isfile(os.path.join(_DIST, "index.html")):
         return {"status": "API online", "dashboard": "not built"}
     file = os.path.join(_DIST, full_path)
     if os.path.isfile(file):
-        return FileResponse(file)
-    return FileResponse(index)
+        cache = _CACHE_IMMUTABLE if full_path.startswith("assets/") else _CACHE_REVALIDATE
+        return FileResponse(file, headers={"Cache-Control": cache})
+    return _index_response()
