@@ -190,6 +190,54 @@ def _mail_parts(message: str):
     return subject, plain, html
 
 
+def _send_ntfy_now(message: str):
+    """
+    Pushmelding via ntfy. Geen account en geen sleutel: je abonneert je in de
+    ntfy-app op een kanaalnaam, en wie naar die naam publiceert bereikt je
+    telefoon. Gaat over HTTPS, dus Railway laat het gewoon door.
+
+    Publiceren gaat als JSON naar de basis-URL in plaats van via HTTP-headers:
+    headers moeten ASCII zijn en onze meldingen bevatten emoji en accenten.
+    """
+    topic = os.environ.get('NTFY_TOPIC', '')
+    if not topic:
+        return
+
+    server = os.environ.get('NTFY_SERVER', 'https://ntfy.sh').rstrip('/')
+    plain  = _strip_html(message)
+    parts  = plain.split("\n", 1)
+    title  = parts[0].strip()[:120] or "TradeBot"
+    body   = (parts[1].strip() if len(parts) > 1 else "") or title
+
+    headers = {}
+    token = os.environ.get('NTFY_TOKEN', '')
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    r = requests.post(
+        server,
+        json={"topic": topic, "title": title, "message": body, "priority": 4},
+        headers=headers,
+        timeout=10,
+    )
+    if r.status_code >= 400:
+        raise RuntimeError(f"ntfy gaf {r.status_code}: {r.text[:300]}")
+
+
+def send_push(message: str):
+    """Push in een eigen thread, zodat de handelslus nooit op het netwerk wacht."""
+    if not os.environ.get('NTFY_TOPIC'):
+        return
+
+    def _run():
+        try:
+            _send_ntfy_now(message)
+        except Exception as e:
+            logger.warning(f"Pushmelding mislukt: {e}")
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def mail_channel() -> str:
     """Welke verzendweg is ingesteld: 'resend', 'smtp' of '' (geen)."""
     if not os.environ.get('MAIL_TO'):
@@ -308,10 +356,11 @@ def notify(message: str):
     """
     Eén ingang voor alle meldingen; stuurt naar elk kanaal dat is ingesteld.
 
-    Telegram en e-mail staan los van elkaar: valt er één weg, dan blijven de
-    meldingen via het andere kanaal gewoon doorkomen.
+    De kanalen staan los van elkaar: valt er één weg, dan blijven de meldingen
+    via de andere gewoon doorkomen.
     """
     send_telegram(message)
+    send_push(message)
     send_email(message)
 
 

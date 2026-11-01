@@ -610,7 +610,7 @@ def test_notification():
     Synchroon en met de échte foutmelding erin: anders stel je vijf SMTP-variabelen
     in en moet je op een trade wachten om te ontdekken dat er een typefout in zat.
     """
-    from bot import send_telegram, _send_email_now, mail_channel
+    from bot import send_telegram, _send_email_now, _send_ntfy_now, mail_channel
     message = (
         "🔔 <b>TESTMELDING</b>\n"
         "Als je dit leest werken de meldingen.\n"
@@ -626,6 +626,13 @@ def test_notification():
         except Exception as e:
             errors.append(f"Telegram: {e}")
 
+    if os.environ.get("NTFY_TOPIC"):
+        try:
+            _send_ntfy_now(message)
+            channels.append("push (ntfy)")
+        except Exception as e:
+            errors.append(f"Push: {e}")
+
     via = mail_channel()
     if via:
         label = "Resend" if via == "resend" else "SMTP"
@@ -637,8 +644,8 @@ def test_notification():
 
     if not channels and not errors:
         return {"ok": False, "message": (
-            "Geen enkel meldingskanaal ingesteld. Zet RESEND_API_KEY en MAIL_TO in "
-            "Railway — uitgaand SMTP is daar geblokkeerd onder het Pro-plan.")}
+            "Geen enkel meldingskanaal ingesteld. Het eenvoudigst is NTFY_TOPIC: "
+            "installeer de ntfy-app, abonneer je op dat kanaal, klaar.")}
     if errors:
         return {"ok": False, "message": " · ".join(errors), "sent": channels}
     return {"ok": True, "message": f"Testmelding verstuurd naar {' en '.join(channels)}."}
