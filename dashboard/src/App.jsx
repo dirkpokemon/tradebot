@@ -1118,15 +1118,30 @@ function NotificationPanel() {
         {busy ? "Versturen…" : "🔔 Stuur een testmelding"}
       </button>
 
+      {/* Geslaagde en mislukte kanalen apart: één falend kanaal mag een werkend
+          kanaal niet onzichtbaar maken. */}
       {result && (
-        <div style={{
-          marginTop: 10, fontSize: 11, lineHeight: 1.5,
-          color: result.ok ? C.green : C.red,
-          background: result.ok ? C.greenBg : C.redBg,
-          border: `1px solid ${(result.ok ? C.green : C.red)}44`,
-          borderRadius: 8, padding: "9px 12px",
-        }}>
-          {result.ok ? "✓ " : "⚠ "}{result.message}
+        <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+          {result.message && (
+            <div style={{
+              fontSize: 11, lineHeight: 1.5,
+              color: result.ok ? C.green : C.red,
+              background: result.ok ? C.greenBg : C.redBg,
+              border: `1px solid ${(result.ok ? C.green : C.red)}44`,
+              borderRadius: 8, padding: "9px 12px",
+            }}>
+              {result.ok ? "✓ " : "⚠ "}{result.message}
+            </div>
+          )}
+          {(result.failed || []).map((f, i) => (
+            <div key={i} style={{
+              fontSize: 11, lineHeight: 1.5, color: C.yellow,
+              background: C.yellowBg, border: `1px solid ${C.yellow}44`,
+              borderRadius: 8, padding: "9px 12px",
+            }}>
+              ⚠ Niet gelukt — {f}
+            </div>
+          ))}
         </div>
       )}
     </Card>

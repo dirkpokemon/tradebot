@@ -643,12 +643,20 @@ def test_notification():
             errors.append(f"E-mail via {label}: {e}")
 
     if not channels and not errors:
-        return {"ok": False, "message": (
+        return {"ok": False, "sent": [], "failed": [], "message": (
             "Geen enkel meldingskanaal ingesteld. Het eenvoudigst is NTFY_TOPIC: "
             "installeer de ntfy-app, abonneer je op dat kanaal, klaar.")}
-    if errors:
-        return {"ok": False, "message": " · ".join(errors), "sent": channels}
-    return {"ok": True, "message": f"Testmelding verstuurd naar {' en '.join(channels)}."}
+
+    # Geslaagde kanalen worden apart teruggegeven van de mislukte. Eerder gaf dit
+    # endpoint alléén de fouten zodra er één kanaal faalde, waardoor een werkende
+    # pushmelding onzichtbaar bleef en het leek alsof er niets werkte.
+    return {
+        "ok": bool(channels),
+        "sent": channels,
+        "failed": errors,
+        "message": (f"Verstuurd naar {' en '.join(channels)}." if channels
+                    else "Geen enkel kanaal kon de melding versturen."),
+    }
 
 
 @app.get("/learning/auto")
