@@ -36,11 +36,12 @@ git commit -m "rebuild dashboard"
 | `SIM_BALANCE` | Starting capital for sim mode (default `10000`) |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token for trade alerts + approval keyboard |
 | `TELEGRAM_CHAT_ID` | Telegram chat ID for trade alerts |
-| `SMTP_HOST` | Mail server for e-mail alerts, e.g. `smtp.gmail.com`. Unset = no e-mail. |
+| `RESEND_API_KEY` | Resend API key — **the working route on Railway**, since outbound SMTP is blocked below the Pro plan. Takes precedence over SMTP when both are set. |
+| `SMTP_HOST` | Mail server for e-mail alerts, e.g. `smtp.gmail.com`. Only works on Railway Pro. Unset = no SMTP. |
 | `SMTP_PORT` | `587` (STARTTLS, default) or `465` (implicit TLS) |
 | `SMTP_USER` / `SMTP_PASSWORD` | Mailbox login. For Gmail this must be an **app password**, not the account password. |
-| `MAIL_TO` | Where alerts go. Unset = no e-mail. |
-| `MAIL_FROM` | Sender address; defaults to `SMTP_USER` |
+| `MAIL_TO` | Where alerts go. Unset = no e-mail at all, whichever route. |
+| `MAIL_FROM` | Sender address. Defaults to `SMTP_USER` for SMTP, or `onboarding@resend.dev` for Resend (which may only send to the account owner until a domain is verified). |
 | `SMTP_TLS` | `true` (default). `false` only for a trusted relay — the code refuses to send a password over an unencrypted link. |
 | `HUMAN_APPROVAL` | `true` = wait for Telegram approve/skip before placing order |
 | `TRADE_MODE` | `daytrade` (default, triggers on 15m close) or `scalp` (triggers on 5m close, tighter TPs) |
@@ -204,6 +205,8 @@ The JS bundle filename changes on every build (Vite content hash). If you forget
 **Notifications go through `bot.notify()`, never through one channel directly.** `notify()` fans out to Telegram and e-mail; each is independent, so losing one does not silence the bot. E-mail goes out on its own daemon thread — an SMTP session takes seconds and the trading loop ticks every 10 — and every network call has a hard timeout. TLS is on by default and `_send_email_now()` refuses to `login()` over an unencrypted link rather than leaking the password. `POST /notify/test` (button on the Bot page) sends synchronously and returns the real exception, because otherwise the only way to discover a typo in five SMTP variables is to wait days for a trade.
 
 **`HUMAN_APPROVAL` is dead.** The Telegram approve/skip flow was removed from `bot.py` and `api.py`; only the `pending_signals` table and the env var on Railway remain. Nothing reads it, so it cannot block trading — but the section below still documents the old flow. Treat that as history, not as behaviour.
+
+**Railway blocks outbound SMTP below the Pro plan.** A mail attempt dies as `[Errno 101] Network is unreachable` — the DNS lookup succeeds and then no packet ever leaves for port 587, so it reads like a bug in our code. It is not: [the docs](https://docs.railway.com/networking/outbound-networking) say SMTP is Pro-only and that Free/Trial/Hobby must use an HTTPS e-mail API. `_send_via_resend()` is that route (HTTPS on 443, never blocked) and `mail_channel()` prefers it over SMTP whenever `RESEND_API_KEY` is set. The SMTP path is kept for Pro or for hosting elsewhere. The same error text also appears for any IPv6 connection while **Enable Outbound IPv6** is off, so read ENETUNREACH as "the platform refused this route", not "the host is down".
 
 **Serve `index.html` with `Cache-Control: no-cache`.** `FileResponse` sends no cache header at all, so a browser is free to guess how long to keep `index.html` — and it does. After a deploy the dashboard kept rendering the previous build, so a freshly shipped button was simply invisible until someone knew to hard-refresh. Vite content-hashes every bundle, so `/assets/*` is now `immutable` for a year while `index.html` must revalidate: that file is the only thing naming which bundle to load. Don't answer "clear your cache" to a missing UI change — check the headers.
 

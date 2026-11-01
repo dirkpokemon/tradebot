@@ -176,43 +176,78 @@ def _strip_html(text: str) -> str:
     return re.sub(r"<[^>]+>", "", text)
 
 
-def _send_email_now(message: str):
-    """
-    Verstuur één melding per e-mail via SMTP.
+def _mail_parts(message: str):
+    """Onderwerp, platte tekst en HTML — gedeeld door beide verzendwegen."""
+    plain = _strip_html(message)
+    # De eerste regel is in elk bericht de kop ("📈 TRADE OPEN [DAYTRADE]") en
+    # is daarmee precies wat je op je telefoon wilt zien zonder de mail te openen.
+    subject = plain.split("\n", 1)[0].strip()[:120] or "TradeBot"
+    html = (
+        "<html><body style=\"font-family:-apple-system,Segoe UI,sans-serif;font-size:15px\">"
+        + message.replace("\n", "<br>")
+        + "</body></html>"
+    )
+    return subject, plain, html
 
-    Bewust smtplib uit de standaardbibliotheek en geen externe maildienst: het
-    werkt met elke provider (Gmail, je eigen domein, wat dan ook) en voegt geen
-    afhankelijkheid of account toe dat ook weer kan verlopen.
-    """
-    host = os.environ.get('SMTP_HOST', '')
-    to   = os.environ.get('MAIL_TO', '')
-    if not host or not to:
-        return
 
+def mail_channel() -> str:
+    """Welke verzendweg is ingesteld: 'resend', 'smtp' of '' (geen)."""
+    if not os.environ.get('MAIL_TO'):
+        return ""
+    if os.environ.get('RESEND_API_KEY'):
+        return "resend"
+    if os.environ.get('SMTP_HOST'):
+        return "smtp"
+    return ""
+
+
+def _send_via_resend(message: str):
+    """
+    Mail via de HTTPS-API van Resend.
+
+    Nodig omdat Railway uitgaand SMTP blokkeert op Free, Trial en Hobby: een
+    verbinding naar poort 587 komt daar niet eens tot stand ("Network is
+    unreachable"). HTTPS gaat over 443 en wordt wél doorgelaten.
+    """
+    to      = os.environ['MAIL_TO']
+    sender  = os.environ.get('MAIL_FROM') or 'onboarding@resend.dev'
+    subject, plain, html = _mail_parts(message)
+
+    r = requests.post(
+        "https://api.resend.com/emails",
+        headers={"Authorization": f"Bearer {os.environ['RESEND_API_KEY']}"},
+        json={"from": sender, "to": [to], "subject": subject, "html": html, "text": plain},
+        timeout=10,
+    )
+    if r.status_code >= 400:
+        # De tekst van Resend zegt meestal precies wat er mis is (ongeldige
+        # sleutel, niet-geverifieerd afzenderdomein); die wil je dus zien.
+        raise RuntimeError(f"Resend gaf {r.status_code}: {r.text[:300]}")
+
+
+def _send_via_smtp(message: str):
+    """
+    Mail via SMTP. Werkt met elke provider, maar op Railway alleen op het
+    Pro-plan — daaronder staat uitgaand SMTP uit.
+    """
     import smtplib, ssl
     from email.message import EmailMessage
 
+    host     = os.environ['SMTP_HOST']
+    to       = os.environ['MAIL_TO']
     port     = int(os.environ.get('SMTP_PORT', '587'))
     user     = os.environ.get('SMTP_USER', '')
     password = os.environ.get('SMTP_PASSWORD', '')
     sender   = os.environ.get('MAIL_FROM', user or to)
 
-    plain   = _strip_html(message)
-    # De eerste regel is in elk bericht de kop ("📈 TRADE OPEN [DAYTRADE]") en
-    # is daarmee precies wat je op je telefoon wilt zien zonder de mail te openen.
-    subject = plain.split("\n", 1)[0].strip()[:120] or "TradeBot"
+    subject, plain, html = _mail_parts(message)
 
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"]    = sender
     msg["To"]      = to
     msg.set_content(plain)
-    msg.add_alternative(
-        "<html><body style=\"font-family:-apple-system,Segoe UI,sans-serif;font-size:15px\">"
-        + message.replace("\n", "<br>")
-        + "</body></html>",
-        subtype="html",
-    )
+    msg.add_alternative(html, subtype="html")
 
     # Versleuteling staat standaard aan: zonder TLS gaat het SMTP-wachtwoord
     # leesbaar over de lijn. SMTP_TLS=false is er alleen voor een vertrouwde
@@ -243,12 +278,21 @@ def _send_email_now(message: str):
         server.send_message(msg)
 
 
+def _send_email_now(message: str):
+    """Verstuur de mail langs de ingestelde weg. Niets ingesteld = stil blijven."""
+    channel = mail_channel()
+    if channel == "resend":
+        _send_via_resend(message)
+    elif channel == "smtp":
+        _send_via_smtp(message)
+
+
 def send_email(message: str):
     """
-    Mail in een eigen thread. Een SMTP-sessie kost al snel een paar seconden en
-    de handelslus draait elke 10 seconden; die mag daar niet op staan wachten.
+    Mail in een eigen thread. Een SMTP-sessie of API-call kost al snel een paar
+    seconden en de handelslus draait elke 10; die mag daar niet op wachten.
     """
-    if not os.environ.get('SMTP_HOST') or not os.environ.get('MAIL_TO'):
+    if not mail_channel():
         return
 
     def _run():
