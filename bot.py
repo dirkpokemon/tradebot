@@ -1012,6 +1012,8 @@ def _process_market(exchange, symbol: str, allow_new: bool) -> bool:
         cooldown_candles=m["cooldown"],
         candles_4h=candles_4h,
         session_filter=False,
+        # Alleen de munt, niet het hele paar: "[ETH][DAYTRADE] Structuur ..."
+        market_label=symbol.split("/")[0],
         **_get_learned_analyze_kwargs(),
     )
 

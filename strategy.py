@@ -661,7 +661,8 @@ def analyze(candles_15m: list, candles_1h: list, cooldown_candles: int = 0,
             min_score_override=None,
             setup_min_scores=None,
             sl_atr_mult=None,
-            min_rr=None) -> Optional[Signal]:
+            min_rr=None,
+            market_label: str = "") -> Optional[Signal]:
     """
     Analyseer de markt op Rotation en Continuation.
     4H en 1H geven score-bonus maar blokkeren nooit — beide richtingen zijn altijd tradeable.
@@ -702,7 +703,11 @@ def analyze(candles_15m: list, candles_1h: list, cooldown_candles: int = 0,
     structure_1h  = get_market_structure(candles_1h)
     structure_15m = get_market_structure(candles_15m)
 
+    # Met meerdere markten zegt "[SCALP] Structuur 4h: ranging" niets meer zonder
+    # te weten over wélke markt het gaat; market_label zet dat ervoor.
     mode_label = "[SCALP]" if scalp_mode else "[DAYTRADE]"
+    if market_label:
+        mode_label = f"[{market_label}]{mode_label}"
     logger.info(
         f"{mode_label} Structuur 4h: {structure_4h or '—'} | 1h: {structure_1h} | 15m: {structure_15m}"
         f" | Sessie: {session_name}"
