@@ -47,6 +47,7 @@ git commit -m "rebuild dashboard"
 | `MAIL_FROM` | Sender address. Defaults to `SMTP_USER` for SMTP, or `onboarding@resend.dev` for Resend (which may only send to the account owner until a domain is verified). |
 | `SMTP_TLS` | `true` (default). `false` only for a trusted relay — the code refuses to send a password over an unencrypted link. |
 | `HUMAN_APPROVAL` | `true` = wait for Telegram approve/skip before placing order |
+| `SYMBOLS` | Comma-separated markets to watch, e.g. `BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT`. Default: BTC only. A list passed to `POST /start` wins over this. |
 | `TRADE_MODE` | `daytrade` (default, triggers on 15m close) or `scalp` (triggers on 5m close, tighter TPs) |
 | `DB_PATH` | Path to SQLite DB, e.g. `/data/trades.db` for Railway volume persistence |
 | `AUTO_START` | `true` (default) = bot starts trading as soon as the service boots; `false` = wait for a manual Start. Without auto-start every redeploy silently halts trading until someone clicks Start. |
@@ -177,7 +178,9 @@ The JS bundle filename changes on every build (Vite content hash). If you forget
 
 ## Key design constraints
 
-- **One trade at a time.** `run_bot` only calls `analyze()` when `open_count == 0`.
+- **One position at a time, across every market.** `run_bot` loops over `state.symbols` and passes `allow_new=False` to `_process_market()` the moment any trade is open anywhere, so other markets are only *managed*, never analysed. This keeps risk at 1% of the account rather than 1% per market. It also replaced the old `daytrade`/`scalp` split, which allowed one of each simultaneously — that was 2% at risk, contrary to the fixed-risk design.
+- **Per-market state lives in `state.markets`,** keyed by symbol: `last_15m`, `last_5m`, `cooldown`, `analysis`. These must never be global — a stop on BTC would silence ETH, and the candle bookkeeping of two markets would collide. `state.symbol` remains the *primary* market (first of `symbols`) for the backtest default and the chart.
+- **`manage_open_trades()` takes a `symbol`.** It applies one price to the trades it loops over, so without the filter an ETH position would be settled against the bitcoin price. `_check_open_trades_live()` likewise fetches a ticker per open market instead of one for all.
 - **Candle-level resolution.** TP checks use the candle close price (plus a 60s live-price poll), not tick-level prices. A trade can skip a TP level if price jumps. SL is the exception — see the exchange-order point below.
 - **SL only moves in the favorable direction.** `trail_sl_to_structure` guards against moving SL against the trade.
 - **EEA / Netherlands users** must use `ccxt.myokx` (OKX's European entity). The code tries `myokx` first and falls back to `okx`.
@@ -228,6 +231,8 @@ The JS bundle filename changes on every build (Vite content hash). If you forget
 **Anything the bot applies to itself needs an off switch.** A self-applied change could only be undone by sitting out the observation window — up to 60 days, and *longer* for a change that slows trading down, because the trades needed to judge it stop arriving. `cancel_active_experiment()` (button "⏹ Stop en zet terug" in `AutoLearnPanel`, `POST /learning/experiment/cancel`) reverts the parameter immediately and closes the experiment as `cancelled`. It deliberately does **not** blacklist: stopping something is not the same as proving it wrong.
 
 **Optimise on total profit, never on per-trade ratios.** Autotune used to pick a variant on expectancy *per trade* plus profit factor. Both are ratios, so "fewer but better trades" always wins — even when it earns less money. Three tightenings stacked up that way (score 50→65, R:R 2.0→3.0, SL 1.5→1.75×ATR), each individually "proven", together throttling the bot: on one day 11 signals were rejected on score alone, three of them at 60 against a bar of 65. `_beats_baseline()` now judges on `total_pnl` over the test window, and refuses any variant that drops below 75% of the baseline's trade count, falls under profit factor 1.0, or deepens drawdown by more than half. Keep a frequency floor in any future objective.
+
+**A price belongs to exactly one market.** Before multi-symbol, `_check_open_trades_live()` fetched the ticker for `state.symbol` and applied it to *every* open trade, and `manage_open_trades()` looped over all trades with whatever candles it was handed. With one market that is invisible; with two it silently settles an ETH stop against the bitcoin price. When adding a second instance of anything (market, account, timeframe), grep for the singular global it used to hang off.
 
 **Verify imports after large changes.** After big refactors, run `python3 -m pip install -r requirements.txt` and then `python3 -c "from api import app; print('OK')"` to catch import errors before pushing. In this container plain `pip` and `python3` can resolve to different interpreters — use `python3 -m pip` to be sure they match.
 

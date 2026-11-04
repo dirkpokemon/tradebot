@@ -1042,18 +1042,35 @@ function AnalysisMode({ a, mode }) {
 // Kleine helper omdat <></> geen key accepteert
 function Fragment2({ children }) { return <>{children}</>; }
 
-function AnalysisPanel({ lastAnalysis }) {
+function AnalysisPanel({ bySymbol, lastAnalysis }) {
   const modes = ["daytrade", "scalp"];
-  const hasData = modes.some(m => lastAnalysis?.[m]);
+  // Meerdere markten: per markt groeperen. Eén markt: gewoon de modi onder elkaar.
+  const markets = Object.entries(bySymbol || {}).filter(([, a]) => modes.some(m => a?.[m]));
+  const single = markets.length === 0 && modes.some(m => lastAnalysis?.[m]);
+
   return (
     <Card title="Wat doet de bot?">
-      {!hasData ? (
+      {!markets.length && !single ? (
         <div style={{ fontSize: 11, color: C.muted, padding: "12px 0" }}>
           Wacht op de eerste candle — start de bot om analyse te zien.
         </div>
-      ) : (
+      ) : single ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {modes.map(m => <AnalysisMode key={m} a={lastAnalysis?.[m]} mode={m} />)}
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {markets.map(([sym, a]) => (
+            <div key={sym}>
+              <div style={{
+                fontSize: 11, fontWeight: 800, color: C.text, marginBottom: 7,
+                fontFamily: MONO, letterSpacing: 0.5,
+              }}>{sym.split("/")[0]}</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {modes.filter(m => a?.[m]).map(m => <AnalysisMode key={m} a={a[m]} mode={m} />)}
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </Card>
@@ -1063,14 +1080,47 @@ function AnalysisPanel({ lastAnalysis }) {
 // ─── Config Panel ─────────────────────────────────────────────────────────────
 
 function ConfigPanel({ config, setConfig, isRunning, loading, onStart, onStop }) {
+  const toggle = (sym) => {
+    const chosen = config.symbols.includes(sym)
+      ? config.symbols.filter(s => s !== sym)
+      : [...SYMBOLS].filter(s => config.symbols.includes(s) || s === sym);
+    // Minstens één markt; anders heeft de bot niets om naar te kijken.
+    if (chosen.length) setConfig({ ...config, symbols: chosen });
+  };
+
   return (
     <Card title="Configuratie">
-      <label style={{ display: "block", marginBottom: 14 }}>
-        <div style={{ fontSize: 9, color: C.muted, marginBottom: 5, letterSpacing: 1, textTransform: "uppercase" }}>Symbol</div>
-        <select value={config.symbol} onChange={e => setConfig({ ...config, symbol: e.target.value })} disabled={isRunning}>
-          {SYMBOLS.map(s => <option key={s}>{s}</option>)}
-        </select>
-      </label>
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontSize: 9, color: C.muted, marginBottom: 6, letterSpacing: 1, textTransform: "uppercase" }}>
+          Markten
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {SYMBOLS.map(s => {
+            const on = config.symbols.includes(s);
+            return (
+              <button key={s} onClick={() => toggle(s)} disabled={isRunning} style={{
+                display: "flex", alignItems: "center", gap: 9, textAlign: "left",
+                padding: "8px 11px", borderRadius: 8, cursor: isRunning ? "not-allowed" : "pointer",
+                fontFamily: "inherit", fontSize: 12, fontWeight: 600,
+                background: on ? C.blueBg : C.card2,
+                border: `1px solid ${on ? C.blue : C.border}`,
+                color: on ? C.text : C.muted, opacity: isRunning ? 0.6 : 1,
+              }}>
+                <span style={{
+                  width: 14, height: 14, borderRadius: 4, flexShrink: 0,
+                  border: `1px solid ${on ? C.blue : C.borderLt}`,
+                  background: on ? C.blue : "transparent",
+                  color: "#fff", fontSize: 10, lineHeight: "13px", textAlign: "center",
+                }}>{on ? "✓" : ""}</span>
+                {s.split("/")[0]}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ fontSize: 10, color: C.dim, marginTop: 6, lineHeight: 1.5 }}>
+          Eén positie tegelijk over alle markten samen — je risico blijft 1%.
+        </div>
+      </div>
       <label style={{ display: "block", marginBottom: 18 }}>
         <div style={{ fontSize: 9, color: C.muted, marginBottom: 5, letterSpacing: 1, textTransform: "uppercase" }}>Risico per trade</div>
         <input type="number" min="0.001" max="0.05" step="0.001"
@@ -2040,7 +2090,7 @@ function Sidebar({ page, onSelect, counts, isRunning }) {
 export default function Dashboard() {
   const [status, setStatus] = useState(null);
   const [stats,  setStats]  = useState(null);
-  const [config, setConfig] = useState({ symbol: "BTC/USDT:USDT", risk_per_trade: 0.01 });
+  const [config, setConfig] = useState({ symbols: ["BTC/USDT:USDT"], risk_per_trade: 0.01 });
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState(null);
 
@@ -2072,6 +2122,15 @@ export default function Dashboard() {
     const id = setInterval(fetchAll, 5000);
     return () => clearInterval(id);
   }, [fetchAll]);
+
+  // Draait de bot al, dan toont het configuratiepaneel wát hij draait — niet
+  // wat je toevallig als laatste had aangevinkt.
+  useEffect(() => {
+    const live = status?.symbols;
+    if (status?.running && live?.length) {
+      setConfig(c => (c.symbols.join() === live.join() ? c : { ...c, symbols: live }));
+    }
+  }, [status?.running, status?.symbols?.join()]);
 
   const [pendingProposals, setPendingProposals] = useState(0);
   useEffect(() => {
@@ -2351,7 +2410,7 @@ export default function Dashboard() {
               <Card title="Setup-statistieken">
                 <SetupStatsGrid stats={stats?.setup_stats} />
               </Card>
-              <AnalysisPanel lastAnalysis={status?.last_analysis} />
+              <AnalysisPanel bySymbol={status?.analysis_by_symbol} lastAnalysis={status?.last_analysis} />
             </div>
           </>
         )}
@@ -2363,7 +2422,7 @@ export default function Dashboard() {
         {page === "analyse" && (
           <>
             <div style={{ marginBottom: 14 }}>
-              <LiveCandleChart trades={allTrades} />
+              <LiveCandleChart trades={allTrades} symbols={status?.symbols || []} />
             </div>
             <BacktestPanel />
             <MonteCarloPanel />

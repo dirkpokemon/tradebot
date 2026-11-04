@@ -17,7 +17,7 @@ const THEME = {
   red:     C.red,
 };
 
-export default function LiveCandleChart({ trades = [] }) {
+export default function LiveCandleChart({ trades = [], symbols = [] }) {
   const containerRef  = useRef(null);
   const chartRef      = useRef(null);
   const seriesRef     = useRef(null);
@@ -25,6 +25,9 @@ export default function LiveCandleChart({ trades = [] }) {
   const priceLinesRef = useRef([]);
 
   const [timeframe,   setTimeframe]   = useState("15m");
+  // Welke markt staat in beeld. Valt terug op de eerste zodra de lijst binnenkomt.
+  const [symbol,      setSymbol]      = useState(null);
+  const activeSymbol = symbol && symbols.includes(symbol) ? symbol : (symbols[0] || null);
   const [lastUpdate,  setLastUpdate]  = useState(null);
   const [error,       setError]       = useState(null);
   const [loading,     setLoading]     = useState(true);
@@ -87,7 +90,9 @@ export default function LiveCandleChart({ trades = [] }) {
   const fetchAndDraw = useCallback(async () => {
     if (!seriesRef.current) return;
     try {
-      const res = await fetch(`${API_URL}/candles?timeframe=${timeframe}&limit=150`);
+      const qs = new URLSearchParams({ timeframe, limit: "150" });
+      if (activeSymbol) qs.set("symbol", activeSymbol);
+      const res = await fetch(`${API_URL}/candles?${qs}`);
       if (!res.ok) {
         // Toon het echte serverfout-detail zodat we kunnen zien wat er mis is
         let detail = `HTTP ${res.status}`;
@@ -120,6 +125,7 @@ export default function LiveCandleChart({ trades = [] }) {
 
       const markers = trades
         .filter(t => t.entry_price && t.timestamp)
+        .filter(t => !activeSymbol || t.symbol === activeSymbol)
         .map(t => {
           const ts = Math.floor(new Date(t.timestamp).getTime() / 1000);
           const label = (t.setup_type || "")
@@ -148,6 +154,7 @@ export default function LiveCandleChart({ trades = [] }) {
       priceLinesRef.current = [];
       trades
         .filter(t => t.status !== "closed" && t.entry_price)
+        .filter(t => !activeSymbol || t.symbol === activeSymbol)
         .forEach(t => {
           const addLine = (price, color, title, style = 2) => {
             if (!price) return;
@@ -165,7 +172,7 @@ export default function LiveCandleChart({ trades = [] }) {
     } catch { /* markers/lijnen zijn nice-to-have */ }
 
     setLoading(false);
-  }, [timeframe, trades]);
+  }, [timeframe, trades, activeSymbol]);
 
   useEffect(() => {
     setLoading(true);
@@ -189,6 +196,28 @@ export default function LiveCandleChart({ trades = [] }) {
           )}
         </div>
 
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        {symbols.length > 1 && (
+          <div style={{ display: "flex", gap: 4 }}>
+            {symbols.map(s => (
+              <button
+                key={s}
+                onClick={() => setSymbol(s)}
+                style={{
+                  padding: "4px 10px", borderRadius: 6, border: "1px solid",
+                  fontSize: 10, fontWeight: 700, cursor: "pointer",
+                  fontFamily: "inherit", letterSpacing: 0.5,
+                  background:   s === activeSymbol ? C.purple : C.card2,
+                  color:        s === activeSymbol ? "#ffffff" : C.muted,
+                  borderColor:  s === activeSymbol ? C.purple  : C.border,
+                }}
+              >
+                {s.split("/")[0]}
+              </button>
+            ))}
+          </div>
+        )}
+
         {/* Timeframe selector */}
         <div style={{ display: "flex", gap: 4 }}>
           {TIMEFRAMES.map(tf => (
@@ -207,6 +236,7 @@ export default function LiveCandleChart({ trades = [] }) {
               {tf.toUpperCase()}
             </button>
           ))}
+        </div>
         </div>
       </div>
 

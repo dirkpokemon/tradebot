@@ -37,7 +37,8 @@ app.add_middleware(
 bot_thread: threading.Thread = None
 
 class BotConfig(BaseModel):
-    symbol: str = "BTC/USDT:USDT"
+    symbol: str = "BTC/USDT:USDT"          # blijft werken voor één markt
+    symbols: list[str] | None = None       # meerdere markten; heeft voorrang
     timeframe: str = "15m"
     risk_per_trade: float = 0.01
 
@@ -69,6 +70,7 @@ def get_status():
         "running": state.running,
         "sim_mode": state.sim_mode,
         "symbol": state.symbol,
+        "symbols": state.symbols,
         "timeframe": "15m",
         "risk_per_trade": state.risk_per_trade,
         "last_signal": state.last_signal,
@@ -89,7 +91,12 @@ def get_status():
         "setup_health": {s: get_setup_health(s) for s in SETUP_TYPES},
         "trade_mode": state.trade_mode,
         "trade_direction": state.trade_direction,
-        "last_analysis": state.last_analysis,
+        # Analyse van de eerste markt — houdt het dashboard werkend als er maar
+        # één markt is. analysis_by_symbol geeft het volledige beeld.
+        "last_analysis": (state.markets.get(state.symbol, {}).get("analysis")
+                          or state.last_analysis),
+        "analysis_by_symbol": {sym: m.get("analysis", {})
+                               for sym, m in state.markets.items()},
     }
 
 def _launch_bot_thread() -> bool:
@@ -107,7 +114,10 @@ def _launch_bot_thread() -> bool:
 def start_bot(config: BotConfig):
     if state.running:
         raise HTTPException(status_code=400, detail="Bot is already running")
-    state.symbol = config.symbol
+    # Eén markt of meerdere; symbols wint als beide zijn meegegeven.
+    state.symbols = [s for s in (config.symbols or [config.symbol]) if s]
+    state.symbol  = state.symbols[0]
+    state.markets = {}          # per-markt toestand hoort bij deze draaibeurt
     state.risk_per_trade = config.risk_per_trade
     _launch_bot_thread()
     return {"message": "Bot started", "config": config}
@@ -188,10 +198,22 @@ _TF_OKX = {"1m":"1m","5m":"5m","15m":"15m","30m":"30m","1h":"1H","4h":"4H","1d":
 _TF_BINANCE = {"1m":"1m","5m":"5m","15m":"15m","30m":"30m","1h":"1h","4h":"4h","1d":"1d"}
 
 
-def _candles_okx(timeframe: str, limit: int) -> list:
+def _inst_okx(symbol: str) -> str:
+    """"BTC/USDT:USDT" → "BTC-USDT-SWAP"."""
+    base = symbol.split("/")[0]
+    return f"{base}-USDT-SWAP"
+
+
+def _inst_binance(symbol: str) -> str:
+    """"BTC/USDT:USDT" → "BTCUSDT"."""
+    return f"{symbol.split('/')[0]}USDT"
+
+
+def _candles_okx(timeframe: str, limit: int, symbol: str) -> list:
     """Directe OKX REST-aanroep — geen ccxt marktlijst nodig."""
     bar = _TF_OKX.get(timeframe, timeframe)
-    url = f"https://www.okx.com/api/v5/market/candles?instId=BTC-USDT-SWAP&bar={bar}&limit={limit}"
+    url = (f"https://www.okx.com/api/v5/market/candles"
+           f"?instId={_inst_okx(symbol)}&bar={bar}&limit={limit}")
     r = requests.get(url, timeout=8)
     r.raise_for_status()
     data = r.json()
@@ -205,10 +227,11 @@ def _candles_okx(timeframe: str, limit: int) -> list:
     ]
 
 
-def _candles_binance(timeframe: str, limit: int) -> list:
+def _candles_binance(timeframe: str, limit: int, symbol: str) -> list:
     """Binance futures als fallback — altijd publiek beschikbaar."""
     interval = _TF_BINANCE.get(timeframe, timeframe)
-    url = f"https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval={interval}&limit={limit}"
+    url = (f"https://fapi.binance.com/fapi/v1/klines"
+           f"?symbol={_inst_binance(symbol)}&interval={interval}&limit={limit}")
     r = requests.get(url, timeout=8)
     r.raise_for_status()
     rows = r.json()
@@ -220,11 +243,14 @@ def _candles_binance(timeframe: str, limit: int) -> list:
 
 
 @app.get("/candles")
-def get_live_candles(timeframe: str = "15m", limit: int = 150):
+def get_live_candles(timeframe: str = "15m", limit: int = 150, symbol: str = None):
+    # Zonder symbool: de hoofdmarkt. Eerder stond hier BTC hardgecodeerd, dus de
+    # grafiek toonde bitcoin ook als de bot op ETH stond te kijken.
+    symbol = symbol or state.symbol
     last_err = None
     for fn in [_candles_okx, _candles_binance]:
         try:
-            return fn(timeframe, limit)
+            return fn(timeframe, limit, symbol)
         except Exception as e:
             last_err = e
     raise HTTPException(status_code=500, detail=f"candles mislukt: {last_err}")
